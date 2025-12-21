@@ -1,0 +1,25 @@
+{
+  "users": {
+    "8382571809": {
+      "id": "8382571809",
+      "name": "Андрей",
+      "telegramId": 8382571809,
+      "balance": 0,
+      "investments": [],
+      "createdAt": "2025-12-21T14:59:40.075Z",
+      "isAdmin": true
+    }
+  },
+  "settings": {
+    "minInvestment": 10,
+    "maxInvestment": 50000,
+    "profitRate": 32.58,
+    "investmentDuration": 4
+  },
+  "stats": {
+    "totalUsers": 1,
+    "totalInvested": 0,
+    "totalProfits": 0,
+    "lastUpdate": "2025-12-21T14:59:40.075Z"
+  }
+}
