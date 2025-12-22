@@ -15,7 +15,7 @@ const JSONBIN_MASTER_KEY = '$2a$10$eCHhQtmSAhD8XqkrlFgE1O6N6OKwgmHrIg.G9hlrkDKIa
 const API_SECRET = 'clapsearn2024secret';
 
 // ===========================================
-// 2. INICIAR EXPRESS SERVIDOR (INMEDIATO)
+// 2. INICIAR EXPRESS SERVIDOR
 // ===========================================
 const app = express();
 const port = process.env.PORT || 8080;
@@ -32,7 +32,8 @@ app.get('/api/test', (req, res) => {
     res.json({
         status: 'API funcionando!',
         time: new Date().toISOString(),
-        bot_running: !!bot
+        bot_running: !!bot,
+        users_count: Object.keys(database.users).length
     });
 });
 
@@ -60,6 +61,7 @@ let database = {
 function verifySecret(req, res, next) {
     const secret = req.headers['x-api-secret'];
     if (secret !== API_SECRET) {
+        console.log('❌ Secret incorrecto:', secret);
         return res.status(401).json({ error: 'No autorizado' });
     }
     next();
@@ -68,6 +70,7 @@ function verifySecret(req, res, next) {
 // Login de usuario
 app.post('/api/login', verifySecret, async (req, res) => {
     try {
+        console.log('🔥 LOGIN REQUEST:', req.body);
         const { userId, userName, telegramId } = req.body;
 
         if (!userId || !telegramId) {
@@ -94,8 +97,9 @@ app.post('/api/login', verifySecret, async (req, res) => {
 
         await saveDatabase();
 
-        // Enviar notificación de login
+        // Enviar notificación de login inmediatamente
         if (bot) {
+            console.log('📱 Enviando notificación de login a:', user.telegramId);
             const loginMessage = `✅ *¡Inicio de sesión exitoso!*\n\n` +
                                  `¡Bienvenido a ClapsEarn, ${user.name}!\n\n` +
                                  `Tu cuenta ha sido conectada correctamente.\n` +
@@ -109,6 +113,8 @@ app.post('/api/login', verifySecret, async (req, res) => {
             } catch (error) {
                 console.error(`❌ Error enviando login: ${error.message}`);
             }
+        } else {
+            console.log('❌ Bot no disponible para enviar login');
         }
 
         res.json({ success: true, message: 'Login exitoso' });
@@ -122,17 +128,17 @@ app.post('/api/login', verifySecret, async (req, res) => {
 // Logout de usuario
 app.post('/api/logout', verifySecret, async (req, res) => {
     try {
+        console.log('🔥 LOGOUT REQUEST:', req.body);
         const { userId } = req.body;
 
         if (!userId) {
             return res.status(400).json({ error: 'userId es obligatorio' });
         }
 
-        await initializeDatabase();
-
         if (database.users[userId] && bot) {
             const user = database.users[userId];
 
+            console.log('📱 Enviando notificación de logout a:', user.telegramId);
             const logoutMessage = `👋 *¡Sesión cerrada exitosamente!*\n\n` +
                                   `Has cerrado tu cuenta en ClapsEarn.\n\n` +
                                   `¡Esperamos verte pronto!\n\n` +
@@ -157,6 +163,7 @@ app.post('/api/logout', verifySecret, async (req, res) => {
 // Crear inversión
 app.post('/api/investment', verifySecret, async (req, res) => {
     try {
+        console.log('🔥 INVESTMENT REQUEST:', req.body);
         const { userId, amount, userName } = req.body;
 
         if (!userId || !amount) {
@@ -196,15 +203,17 @@ app.post('/api/investment', verifySecret, async (req, res) => {
 
         await saveDatabase();
 
-        // Enviar notificación de compra
+        // Enviar notificación de compra inmediatamente
         if (user.telegramId && bot) {
+            console.log('📱 Enviando notificación de compra a:', user.telegramId);
             const purchaseMessage = `🎉 *¡Nueva inversión creada!*\n\n` +
                                    `¡Felicidades ${user.name}!\n\n` +
                                    `Has invertido *${investment.amount} Bs.*\n\n` +
                                    `*Detalles:*\n` +
                                    `💰 Monto: ${investment.amount} Bs.\n` +
                                    `📈 Ganancia máxima: +3258%\n` +
-                                   `⏰ Duración: 4 horas\n\n` +
+                                   `⏰ Duración: 4 horas\n` +
+                                   `🔢 Número: #${user.investments.length}\n\n` +
                                    `📊 *Próximas notificaciones:*\n` +
                                    `• En 2 horas: ¡Crecimiento!\n` +
                                    `• En 4 horas: ¡Ganancia máxima!\n\n` +
@@ -218,6 +227,8 @@ app.post('/api/investment', verifySecret, async (req, res) => {
             } catch (error) {
                 console.error(`❌ Error enviando compra: ${error.message}`);
             }
+        } else {
+            console.log('❌ Bot no disponible o usuario sin Telegram');
         }
 
         res.json({
@@ -237,6 +248,8 @@ app.post('/api/investment', verifySecret, async (req, res) => {
 // ===========================================
 app.listen(port, () => {
     console.log(`✅ Servidor iniciado en puerto ${port}`);
+    console.log(`🌐 Health check: http://localhost:${port}/health`);
+    console.log(`🧪 Test endpoint: http://localhost:${port}/api/test`);
 });
 
 // ===========================================
@@ -337,7 +350,81 @@ async function saveDatabase() {
 }
 
 // ===========================================
-// 7. SISTEMA DE NOTIFICACIONES
+// 7. INICIAR BOT DE TELEGRAM
+// ===========================================
+
+async function startBot() {
+    try {
+        console.log('🔧 Iniciando bot de Telegram...');
+
+        // Primero eliminar webhooks si existen
+        try {
+            await fetch(`https://api.telegram.org/bot${TOKEN}/deleteWebhook`, {
+                timeout: 10000
+            });
+            console.log('✅ Webhooks eliminados');
+        } catch (error) {
+            console.log('⚠️ Error eliminando webhooks:', error.message);
+        }
+
+        bot = new TelegramBot(TOKEN, {
+            polling: true
+        });
+
+        // Comando /start
+        bot.onText(/\/start/, (msg) => {
+            const chatId = msg.chat.id;
+            const username = msg.from.username || msg.from.first_name || 'Usuario';
+
+            const welcomeMessage = `¡Bienvenido a ClapsEarn! 🎉\n\n` +
+                                  `¡Abre el sitio web e invierte ahora! 🚀\n\n` +
+                                  `💰 *Invierte y gana hasta +3258%*\n` +
+                                  `⏰ *En solo 4 horas*\n` +
+                                  `🔒 *Seguro y confiable*\n\n` +
+                                  `🌐 *Visita nuestro sitio web para empezar*\n\n` +
+                                  `💎 *¡Tu éxito financiero te espera!*`;
+
+            const keyboard = {
+                inline_keyboard: [[
+                    { text: '👨‍💼 Contactar al gerente', url: 'https://t.me/tu_manager' }
+                ]]
+            };
+
+            bot.sendMessage(chatId, welcomeMessage, {
+                parse_mode: 'Markdown',
+                reply_markup: keyboard
+            });
+        });
+
+        // Comando de prueba
+        bot.onText(/\/test/, (msg) => {
+            bot.sendMessage(msg.chat.id, '✅ ¡El bot está funcionando correctamente!');
+        });
+
+        bot.on('polling_error', (error) => {
+            console.error('❌ Error del bot:', error.message);
+        });
+
+        console.log('✅ Bot de Telegram iniciado exitosamente!');
+
+        // Enviar mensaje al admin
+        bot.sendMessage(ADMIN_ID, '🤖 ¡Bot ClapsEarn iniciado!\n\n' +
+            '✅ Sistema funcionando:\n' +
+            '• API de login/logout\n' +
+            '• Creación de inversiones\n' +
+            '• Notificaciones automáticas\n' +
+            '• Base de datos JSONbin\n\n' +
+            '🧪 Prueba: /test')
+            .catch(err => console.log('⚠️ No se pudo enviar mensaje al admin'));
+
+    } catch (error) {
+        console.error('❌ Error iniciando bot:', error.message);
+        console.log('⚠️ El servidor continúa sin el bot');
+    }
+}
+
+// ===========================================
+// 8. SISTEMA DE NOTIFICACIONES
 // ===========================================
 
 function calculateInvestmentGrowth(investment) {
@@ -355,7 +442,12 @@ function calculateInvestmentGrowth(investment) {
 
 async function sendInvestmentNotifications() {
     try {
-        if (!bot) return;
+        if (!bot) {
+            console.log('⚠️ Bot no disponible para notificaciones');
+            return;
+        }
+
+        console.log('🔍 Verificando notificaciones de inversiones...');
 
         for (const [userId, user] of Object.entries(database.users)) {
             if (!user.investments || user.investments.length === 0) continue;
@@ -434,76 +526,22 @@ async function sendInvestmentNotifications() {
 }
 
 // ===========================================
-// 8. INICIAR BOT DE TELEGRAM
-// ===========================================
-
-setTimeout(() => {
-    try {
-        console.log('🔧 Iniciando bot de Telegram...');
-
-        bot = new TelegramBot(TOKEN, {
-            polling: true
-        });
-
-        // Comando /start con mensaje de bienvenida
-        bot.onText(/\/start/, (msg) => {
-            const chatId = msg.chat.id;
-            const username = msg.from.username || msg.from.first_name || 'Usuario';
-
-            const welcomeMessage = `¡Bienvenido a ClapsEarn! 🎉\n\n` +
-                                  `¡Abre el sitio web e invierte ahora! 🚀\n\n` +
-                                  `💰 *Invierte y gana hasta +3258%*\n` +
-                                  `⏰ *En solo 4 horas*\n` +
-                                  `🔒 *Seguro y confiable*\n\n` +
-                                  `🌐 *Visita nuestro sitio web para empezar*\n\n` +
-                                  `💎 *¡Tu éxito financiero te espera!*`;
-
-            const keyboard = {
-                inline_keyboard: [[
-                    { text: '👨‍💼 Contactar al gerente', url: 'https://t.me/tu_manager' }
-                ]]
-            };
-
-            bot.sendMessage(chatId, welcomeMessage, {
-                parse_mode: 'Markdown',
-                reply_markup: keyboard
-            });
-        });
-
-        bot.on('polling_error', (error) => {
-            console.error('❌ Error del bot:', error.message);
-        });
-
-        console.log('✅ Bot de Telegram iniciado exitosamente!');
-
-        bot.sendMessage(ADMIN_ID, '🤖 ¡Bot ClapsEarn iniciado!\n\n' +
-            '✅ Sistema funcionando:\n' +
-            '• API de login/logout\n' +
-            '• Creación de inversiones\n' +
-            '• Notificaciones automáticas\n' +
-            '• Base de datos JSONbin')
-            .catch(err => console.log('⚠️ No se pudo enviar mensaje al admin'));
-
-    } catch (error) {
-        console.error('❌ Error iniciando bot:', error.message);
-        console.log('⚠️ El servidor continúa sin el bot');
-    }
-}, 3000);
-
-// ===========================================
 // 9. INICIALIZACIÓN DEL SISTEMA
 // ===========================================
 
 async function initialize() {
     console.log('='.repeat(60));
-    console.log('🤖 ClapsEarn Bot - Versión Completa');
+    console.log('🤖 ClapsEarn Bot - Versión con Depuración');
     console.log('🌐 Servidor Express: ACTIVO');
-    console.log('📊 Notificaciones automáticas: ACTIVAS');
+    console.log('📊 Sistema de notificaciones: ACTIVO');
     console.log('💾 Base de datos JSONbin: ACTIVA');
     console.log('🔐 API con seguridad: ACTIVO');
     console.log('='.repeat(60));
 
     await loadDatabase();
+
+    // Iniciar bot inmediatamente
+    await startBot();
 
     // Iniciar verificación de notificaciones cada 30 segundos
     setInterval(sendInvestmentNotifications, 30000);
