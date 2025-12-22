@@ -1,18 +1,20 @@
 {
-  "name": "inversiones-bolivia-bot",
-  "version": "1.0.0",
-  "description": "Telegram bot for Inversiones Bolivia investment notifications",
+  "name": "inversiones-bolivia-bot-webhook",
+  "version": "2.0.0",
+  "description": "Telegram Bot para Inversiones Bolivia con Webhook",
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js",
     "dev": "nodemon bot.js",
+    "setup-webhook": "node setup-webhook.js",
     "deploy": "railway up"
   },
   "dependencies": {
     "node-telegram-bot-api": "^0.64.0",
     "axios": "^1.6.0",
     "dotenv": "^16.3.0",
-    "node-cron": "^3.0.3"
+    "node-cron": "^3.0.3",
+    "express": "^4.18.0"
   },
   "devDependencies": {
     "nodemon": "^3.0.1"

@@ -1,103 +1,69 @@
 const TelegramBot = require('node-telegram-bot-api');
 const axios = require('axios');
 const cron = require('node-cron');
+const express = require('express');
 require('dotenv').config();
 
-// 配置常量
+// Конфигурация
 const BOT_TOKEN = process.env.BOT_TOKEN || '8272381619:AAGy9netoupQboX1WgI5I59fQvZkz_4OlLs';
 const JSONBIN_BIN_ID = process.env.JSONBIN_BIN_ID || '69468d57d0ea881f40361a98';
 const JSONBIN_MASTER_KEY = process.env.JSONBIN_MASTER_KEY || '$2a$10$eCHhQtmSAhD8XqkrlFgE1O6N6OKwgmHrIg.G9hlrkDKIaex3GMuiW';
 const ADMIN_TELEGRAM_ID = process.env.ADMIN_TELEGRAM_ID || '8382571809';
+const WEBHOOK_URL = process.env.WEBHOOK_URL || 'https://ваш-сайт.pythonanywhere.com/bot-webhook'; // Укажите ваш URL
 const JSONBIN_URL = `https://api.jsonbin.io/v3/b/${JSONBIN_BIN_ID}/latest`;
 
-// 投资参数
-const INVESTMENT_DURATION = 4 * 60 * 60 * 1000; // 4小时
-const MAX_PROFIT_PERCENTAGE = 3258; // +3258%
+// Параметры
+const INVESTMENT_DURATION = 4 * 60 * 60 * 1000;
+const MAX_PROFIT_PERCENTAGE = 3258;
 
-// 初始化Bot
-const bot = new TelegramBot(BOT_TOKEN, { polling: true });
+// Инициализация Express
+const app = express();
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
-// 已发送通知缓存（防止重复发送）
+// Инициализация бота в режиме вебхуков
+const bot = new TelegramBot(BOT_TOKEN);
+bot.setWebHook(`${WEBHOOK_URL}/${BOT_TOKEN}`);
+
+// Кэш уведомлений
 const sentNotificationsCache = new Map();
-const CACHE_DURATION = 24 * 60 * 60 * 1000; // 24小时
+const CACHE_DURATION = 24 * 60 * 60 * 1000;
 
-// 加载数据库
+// ==================== ФУНКЦИИ ДЛЯ РАБОТЫ С БД ====================
+
 async function loadDatabase() {
     try {
-        console.log('📦 Loading database from JSONbin...');
         const response = await axios.get(JSONBIN_URL, {
-            headers: {
-                'X-Master-Key': JSONBIN_MASTER_KEY,
-                'Content-Type': 'application/json'
-            }
+            headers: { 'X-Master-Key': JSONBIN_MASTER_KEY }
         });
-
-        if (!response.data || !response.data.record) {
-            console.error('❌ Invalid database response');
-            return { users: {} };
-        }
-
-        const database = response.data.record;
-
-        // 确保数据结构正确
-        if (!database.users) database.users = {};
-        if (!database.settings) database.settings = { admins: ['Admin'] };
-
-        console.log('✅ Database loaded successfully');
-        return database;
+        return response.data.record || { users: {}, settings: { admins: ['Admin'] } };
     } catch (error) {
-        console.error('❌ Error loading database:', error.message);
-        return { users: {} };
+        console.error('❌ Ошибка загрузки БД:', error.message);
+        return { users: {}, settings: { admins: ['Admin'] } };
     }
 }
 
-// 保存数据库
 async function saveDatabase(database) {
     try {
-        const response = await axios.put(
+        await axios.put(
             `https://api.jsonbin.io/v3/b/${JSONBIN_BIN_ID}`,
             database,
-            {
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-Master-Key': JSONBIN_MASTER_KEY,
-                    'X-Bin-Versioning': 'false'
-                }
-            }
+            { headers: { 'Content-Type': 'application/json', 'X-Master-Key': JSONBIN_MASTER_KEY } }
         );
-        console.log('✅ Database saved successfully');
         return true;
     } catch (error) {
-        console.error('❌ Error saving database:', error.message);
+        console.error('❌ Ошибка сохранения БД:', error.message);
         return false;
     }
 }
 
-// 计算当前投资利润
-function calculateCurrentProfit(investment) {
-    const now = Date.now();
-    const startTime = new Date(investment.startDate).getTime();
-    const elapsed = now - startTime;
-
-    if (elapsed >= INVESTMENT_DURATION) {
-        return MAX_PROFIT_PERCENTAGE; // 达到最大利润
-    }
-
-    // 几何级数增长
-    const progress = elapsed / INVESTMENT_DURATION;
-    const profitPercentage = MAX_PROFIT_PERCENTAGE * (1 - Math.pow(0.5, progress * 2));
-    return Math.min(profitPercentage, MAX_PROFIT_PERCENTAGE);
-}
-
-// 发送Telegram消息（带防重复检查）
 async function sendNotification(chatId, message) {
     try {
-        // 检查是否已发送过相同消息
         const cacheKey = `${chatId}_${message.substring(0, 50)}`;
         const lastSent = sentNotificationsCache.get(cacheKey);
 
         if (lastSent && (Date.now() - lastSent) < CACHE_DURATION) {
-            console.log(`⏭️ Skipping duplicate notification for user ${chatId}`);
+            console.log(`⏭️ Пропуск дубликата для ${chatId}`);
             return false;
         }
 
@@ -106,20 +72,186 @@ async function sendNotification(chatId, message) {
             disable_web_page_preview: true
         });
 
-        // 更新缓存
         sentNotificationsCache.set(cacheKey, Date.now());
-        console.log(`📨 Notification sent to ${chatId}`);
+        console.log(`📨 Отправлено ${chatId}`);
         return true;
     } catch (error) {
-        console.error(`❌ Error sending notification to ${chatId}:`, error.message);
+        console.error(`❌ Ошибка отправки ${chatId}:`, error.message);
         return false;
     }
 }
 
-// 检查并发送投资通知
-async function checkAndSendInvestmentNotifications() {
+// ==================== API ДЛЯ ВАШЕГО САЙТА ====================
+
+// 1. Конечная точка для создания инвестиций (будет вызываться с вашего сайта)
+app.post('/api/investment-created', async (req, res) => {
+    console.log('📥 Получен запрос от сайта:', req.body);
+
     try {
-        console.log('🔍 Checking investment notifications...');
+        const { userId, telegramId, userName, amount, investmentId } = req.body;
+
+        // Валидация
+        if (!telegramId || !amount) {
+            return res.status(400).json({
+                success: false,
+                error: 'Faltan datos: telegramId y amount son requeridos'
+            });
+        }
+
+        // Отправляем уведомление о новой инвестиции
+        const message = `🎉 *¡NUEVA INVERSIÓN CREADA!*\n\n` +
+                       `*Usuario:* ${userName || 'Inversor'}\n` +
+                       `*Monto:* Bs. ${parseFloat(amount).toFixed(2)}\n` +
+                       `*Retorno máximo:* +${MAX_PROFIT_PERCENTAGE}%\n` +
+                       `*Duración:* 4 horas\n\n` +
+                       `¡Tu dinero ya está creciendo! 🚀\n` +
+                       `Recibirás actualizaciones cada 2 horas.`;
+
+        const sent = await sendNotification(telegramId, message);
+
+        // Также отправляем администратору
+        if (ADMIN_TELEGRAM_ID && ADMIN_TELEGRAM_ID !== telegramId) {
+            const adminMsg = `📊 *Nueva inversión*\n\n` +
+                           `Usuario: ${userName || 'Nuevo'}\n` +
+                           `Monto: Bs. ${parseFloat(amount).toFixed(2)}\n` +
+                           `Hora: ${new Date().toLocaleString('es-ES')}`;
+            await sendNotification(ADMIN_TELEGRAM_ID, adminMsg);
+        }
+
+        res.json({
+            success: true,
+            message: 'Notificación enviada correctamente',
+            notificationSent: sent
+        });
+
+    } catch (error) {
+        console.error('❌ Error en investment-created:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Error interno del servidor'
+        });
+    }
+});
+
+// 2. Регистрация нового пользователя
+app.post('/api/user-registered', async (req, res) => {
+    try {
+        const { telegramId, userName } = req.body;
+
+        const message = `👋 *¡BIENVENIDO A INVERSIONES BOLIVIA, ${userName}!*\n\n` +
+                       `Tu cuenta ha sido creada exitosamente.\n\n` +
+                       `*Ahora puedes:*\n` +
+                       `• Crear inversiones\n` +
+                       `• Seguir el crecimiento en tiempo real\n` +
+                       `• Recibir notificaciones automáticas\n\n` +
+                       `¡Comienza tu camino al éxito! 🚀`;
+
+        const sent = await sendNotification(telegramId, message);
+
+        res.json({
+            success: true,
+            message: 'Mensaje de bienvenida enviado',
+            notificationSent: sent
+        });
+
+    } catch (error) {
+        console.error('❌ Error en user-registered:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// 3. Статус здоровья API
+app.get('/api/health', (req, res) => {
+    res.json({
+        status: 'online',
+        service: 'Inversiones Bolivia Bot',
+        timestamp: new Date().toISOString(),
+        webhook: WEBHOOK_URL ? 'configured' : 'not configured',
+        cacheSize: sentNotificationsCache.size
+    });
+});
+
+// ==================== ВЕБХУК TELEGRAM ====================
+
+// Маршрут для вебхука Telegram
+app.post(`/bot-webhook/${BOT_TOKEN}`, (req, res) => {
+    const update = req.body;
+    console.log('📱 Update from Telegram:', update?.message?.text || 'no text');
+
+    // Обработка обновлений
+    bot.processUpdate(update);
+    res.sendStatus(200);
+});
+
+// ==================== ОБРАБОТЧИКИ КОМАНД ====================
+
+// Команда /start
+bot.onText(/\/start/, async (msg) => {
+    const chatId = msg.chat.id;
+    const firstName = msg.from.first_name || 'Usuario';
+
+    const response = `🤖 *BOT DE INVERSIONES BOLIVIA*\n\n` +
+                    `Hola ${firstName}, soy el sistema de notificaciones.\n\n` +
+                    `*Recibirás automáticamente:*\n` +
+                    `• 🎉 Confirmación de inversiones\n` +
+                    `• 📈 Actualizaciones cada 2 horas\n` +
+                    `• 🏆 Notificación de finalización\n\n` +
+                    `Para crear inversiones, visita nuestra web.`;
+
+    await bot.sendMessage(chatId, response, { parse_mode: 'Markdown' });
+});
+
+// Команда /help
+bot.onText(/\/help/, async (msg) => {
+    const chatId = msg.chat.id;
+
+    const response = `📋 *AYUDA*\n\n` +
+                    `Este bot envía notificaciones automáticas sobre tus inversiones.\n\n` +
+                    `*Comandos disponibles:*\n` +
+                    `/start - Mensaje de bienvenida\n` +
+                    `/status - Ver estado de notificaciones\n` +
+                    `/help - Esta ayuda\n\n` +
+                    `Las inversiones se crean desde la web oficial.`;
+
+    await bot.sendMessage(chatId, response, { parse_mode: 'Markdown' });
+});
+
+// Команда /status
+bot.onText(/\/status/, async (msg) => {
+    const chatId = msg.chat.id;
+
+    const db = await loadDatabase();
+    const user = Object.values(db.users).find(u => u.telegramId == chatId);
+
+    let response = `📊 *ESTADO DEL SISTEMA*\n\n`;
+    response += `*Bot:* Activo ✅\n`;
+    response += `*Hora:* ${new Date().toLocaleString('es-ES')}\n`;
+    response += `*Notificaciones en cache:* ${sentNotificationsCache.size}\n\n`;
+
+    if (user) {
+        response += `*Tu usuario:* ${user.name}\n`;
+        response += `*ID:* ${user.id?.substring(0, 8)}...\n`;
+
+        if (user.investments && user.investments.length > 0) {
+            response += `*Inversiones activas:* ${user.investments.length}\n`;
+        } else {
+            response += `*No tienes inversiones activas.*\n`;
+        }
+    } else {
+        response += `*No estás registrado en el sistema.*\n`;
+        response += `Visita la web para crear tu cuenta.`;
+    }
+
+    await bot.sendMessage(chatId, response, { parse_mode: 'Markdown' });
+});
+
+// ==================== АВТОМАТИЧЕСКИЕ ПРОВЕРКИ ====================
+
+// Функция для проверки прогресса инвестиций
+async function checkInvestmentProgress() {
+    console.log('⏰ Ejecutando chequeo de inversiones...');
+
+    try {
         const database = await loadDatabase();
         const users = database.users;
         let notificationsSent = 0;
@@ -127,13 +259,10 @@ async function checkAndSendInvestmentNotifications() {
         for (const userId in users) {
             const user = users[userId];
 
-            // 用户必须有Telegram ID和投资
-            if (!user.telegramId || !user.investments || user.investments.length === 0) {
-                continue;
-            }
+            if (!user.telegramId || !user.investments) continue;
 
             for (const investment of user.investments) {
-                // 确保notifications对象存在
+                // Убедимся, что есть объект notifications
                 if (!investment.notifications) {
                     investment.notifications = {
                         purchase: false,
@@ -142,239 +271,114 @@ async function checkAndSendInvestmentNotifications() {
                     };
                 }
 
-                // 计算投资数据
                 const now = Date.now();
                 const startTime = new Date(investment.startDate).getTime();
                 const elapsed = now - startTime;
-                const isCompleted = elapsed >= INVESTMENT_DURATION;
-                const profitPercentage = calculateCurrentProfit(investment);
                 const hoursElapsed = elapsed / (1000 * 60 * 60);
+                const isCompleted = elapsed >= INVESTMENT_DURATION;
 
-                // 1. 购买通知（仅一次）
-                if (!investment.notifications.purchase && investment.status === 'active') {
-                    const purchaseMessage = `🎉 *¡Nueva inversión creada!*\n\n` +
-                                          `*Monto:* Bs. ${investment.amount.toFixed(2)}\n` +
-                                          `*Retorno máximo:* +${MAX_PROFIT_PERCENTAGE}%\n` +
-                                          `*Duración:* 4 horas\n\n` +
-                                          `¡Tu inversión ha comenzado a crecer! 🚀`;
-
-                    await sendNotification(user.telegramId, purchaseMessage);
-                    investment.notifications.purchase = true;
-                    notificationsSent++;
-                }
-
-                // 2. 2小时通知（仅一次）
+                // Уведомление через 2 часа
                 if (!investment.notifications.twoHours && hoursElapsed >= 2 && !isCompleted) {
-                    const twoHourMessage = `📈 *¡Tu inversión está creciendo!*\n\n` +
-                                          `*Han pasado:* 2 horas\n` +
-                                          `*Crecimiento actual:* +${profitPercentage.toFixed(2)}%\n` +
-                                          `*Ganancia actual:* Bs. ${(investment.amount * profitPercentage / 100).toFixed(2)}\n\n` +
-                                          `¡Sigue creciendo hasta +${MAX_PROFIT_PERCENTAGE}% en 2 horas más! 💪`;
+                    const profit = calculateCurrentProfit(investment);
+                    const message = `📈 *¡CRECIMIENTO DETECTADO!*\n\n` +
+                                   `Han pasado 2 horas de tu inversión.\n` +
+                                   `*Crecimiento actual:* +${profit.toFixed(1)}%\n` +
+                                   `*Ganancia:* Bs. ${(investment.amount * profit / 100).toFixed(2)}\n\n` +
+                                   `¡Sigue creciendo! 💰`;
 
-                    await sendNotification(user.telegramId, twoHourMessage);
+                    await sendNotification(user.telegramId, message);
                     investment.notifications.twoHours = true;
                     notificationsSent++;
                 }
 
-                // 3. 完成通知（仅一次）
+                // Уведомление о завершении
                 if (!investment.notifications.completed && isCompleted) {
                     const finalProfit = investment.amount * MAX_PROFIT_PERCENTAGE / 100;
-                    const totalAmount = investment.amount + finalProfit;
+                    const total = investment.amount + finalProfit;
 
-                    const completedMessage = `🏆 *¡INVERSIÓN COMPLETADA!*\n\n` +
-                                            `*Inversión inicial:* Bs. ${investment.amount.toFixed(2)}\n` +
-                                            `*Ganancia final:* +${MAX_PROFIT_PERCENTAGE}%\n` +
-                                            `*Ganancia:* Bs. ${finalProfit.toFixed(2)}\n` +
-                                            `*Total:* Bs. ${totalAmount.toFixed(2)}\n\n` +
-                                            `*¡ESCRIBE AL ADMINISTRADOR PARA RETIRAR!*\n` +
-                                            `Contacta al gestor de inversiones para retirar tus ganancias. 📞`;
+                    const message = `🏆 *¡INVERSIÓN COMPLETADA!*\n\n` +
+                                   `*Inversión:* Bs. ${investment.amount.toFixed(2)}\n` +
+                                   `*Ganancia:* +${MAX_PROFIT_PERCENTAGE}%\n` +
+                                   `*Total:* Bs. ${total.toFixed(2)}\n\n` +
+                                   `⚠️ *¡CONTACTA AL ADMINISTRADOR PARA RETIRAR!*`;
 
-                    await sendNotification(user.telegramId, completedMessage);
+                    await sendNotification(user.telegramId, message);
                     investment.notifications.completed = true;
                     notificationsSent++;
                 }
             }
         }
 
-        // 保存更新后的数据库
+        // Сохраняем обновления
         if (notificationsSent > 0) {
             await saveDatabase(database);
-            console.log(`✅ ${notificationsSent} notifications sent and saved`);
-        } else {
-            console.log('ℹ️ No notifications to send');
+            console.log(`✅ ${notificationsSent} notificaciones enviadas`);
         }
 
     } catch (error) {
-        console.error('❌ Error in notification check:', error.message);
+        console.error('❌ Error en checkInvestmentProgress:', error.message);
     }
 }
 
-// Bot命令处理
-bot.onText(/\/start/, async (msg) => {
-    const chatId = msg.chat.id;
-    const firstName = msg.from.first_name || 'Usuario';
+// Функция расчета прибыли
+function calculateCurrentProfit(investment) {
+    const now = Date.now();
+    const startTime = new Date(investment.startDate).getTime();
+    const elapsed = now - startTime;
 
-    const welcomeMessage = `👋 *¡Hola ${firstName}!*\n\n` +
-                          `Soy el bot de *Inversiones Bolivia*.\n\n` +
-                          `*Funciones:*\n` +
-                          `• 📊 Seguimiento de inversiones\n` +
-                          `• 🔔 Notificaciones automáticas\n` +
-                          `• 📈 Actualizaciones de crecimiento\n` +
-                          `• 🏆 Alertas de finalización\n\n` +
-                          `Para usar el sistema completo, visita nuestra web a través de Telegram.`;
+    if (elapsed >= INVESTMENT_DURATION) return MAX_PROFIT_PERCENTAGE;
 
-    await bot.sendMessage(chatId, welcomeMessage, { parse_mode: 'Markdown' });
-});
+    const progress = elapsed / INVESTMENT_DURATION;
+    const profit = MAX_PROFIT_PERCENTAGE * (1 - Math.pow(0.5, progress * 2));
+    return Math.min(profit, MAX_PROFIT_PERCENTAGE);
+}
 
-// 用户绑定命令
-bot.onText(/\/bind (.+)/, async (msg, match) => {
-    const chatId = msg.chat.id;
-    const telegramId = match[1];
+// ==================== ЗАПУСК СЕРВЕРА ====================
 
-    // 这里可以添加用户绑定逻辑
-    const bindMessage = `🔗 *Vinculación de cuenta*\n\n` +
-                       `Tu Telegram ID: \`${telegramId}\`\n\n` +
-                       `Para vincular tu cuenta, ingresa a través de la web de Inversiones Bolivia y haz clic en "Conectar Telegram".`;
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+    console.log(`🚀 Servidor iniciado en puerto ${PORT}`);
+    console.log(`🤖 Bot: ${bot.options.username}`);
+    console.log(`🌐 Webhook: ${WEBHOOK_URL || 'No configurado'}`);
+    console.log(`📞 API Health: http://localhost:${PORT}/api/health`);
+    console.log(`👑 Admin: ${ADMIN_TELEGRAM_ID}`);
 
-    await bot.sendMessage(chatId, bindMessage, { parse_mode: 'Markdown' });
-});
-
-// 管理员命令
-bot.onText(/\/admin/, async (msg) => {
-    const chatId = msg.chat.id;
-
-    // 检查是否是管理员
-    if (chatId.toString() !== ADMIN_TELEGRAM_ID) {
-        await bot.sendMessage(chatId, '❌ No tienes permisos de administrador.');
-        return;
-    }
-
-    const adminMessage = `👑 *Panel de Administrador*\n\n` +
-                        `*Comandos disponibles:*\n` +
-                        `/stats - Ver estadísticas del sistema\n` +
-                        `/users - Listar todos los usuarios\n` +
-                        `/investments - Ver todas las inversiones\n` +
-                        `/test - Enviar notificación de prueba`;
-
-    await bot.sendMessage(chatId, adminMessage, { parse_mode: 'Markdown' });
-});
-
-// 管理员：系统统计
-bot.onText(/\/stats/, async (msg) => {
-    const chatId = msg.chat.id;
-
-    if (chatId.toString() !== ADMIN_TELEGRAM_ID) {
-        return;
-    }
-
-    try {
-        const database = await loadDatabase();
-        const users = Object.values(database.users);
-        const totalUsers = users.length;
-        const activeUsers = users.filter(u => u.telegramId).length;
-
-        let totalInvestments = 0;
-        let totalInvested = 0;
-        let activeInvestments = 0;
-
-        users.forEach(user => {
-            if (user.investments) {
-                totalInvestments += user.investments.length;
-                activeInvestments += user.investments.filter(inv =>
-                    new Date(inv.startDate).getTime() + INVESTMENT_DURATION > Date.now()
-                ).length;
-                totalInvested += user.investments.reduce((sum, inv) => sum + inv.amount, 0);
-            }
-        });
-
-        const statsMessage = `📊 *Estadísticas del Sistema*\n\n` +
-                            `*Usuarios totales:* ${totalUsers}\n` +
-                            `*Usuarios activos (Telegram):* ${activeUsers}\n` +
-                            `*Inversiones totales:* ${totalInvestments}\n` +
-                            `*Inversiones activas:* ${activeInvestments}\n` +
-                            `*Total invertido:* Bs. ${totalInvested.toFixed(2)}\n` +
-                            `*Cache de notificaciones:* ${sentNotificationsCache.size}`;
-
-        await bot.sendMessage(chatId, statsMessage, { parse_mode: 'Markdown' });
-    } catch (error) {
-        await bot.sendMessage(chatId, `❌ Error: ${error.message}`);
+    // Запускаем планировщик
+    if (!WEBHOOK_URL) {
+        console.warn('⚠️  WEBHOOK_URL no configurado. Usando polling como respaldo.');
+        bot.startPolling();
     }
 });
 
-// 测试通知
-bot.onText(/\/test/, async (msg) => {
-    const chatId = msg.chat.id;
+// Запускаем проверки каждые 10 minutos
+cron.schedule('*/10 * * * *', checkInvestmentProgress);
 
-    if (chatId.toString() !== ADMIN_TELEGRAM_ID) {
-        return;
-    }
-
-    const testMessage = `🧪 *Notificación de prueba*\n\n` +
-                       `Hora: ${new Date().toLocaleString()}\n` +
-                       `Este es un mensaje de prueba del bot.\n\n` +
-                       `✅ Sistema funcionando correctamente.`;
-
-    await sendNotification(chatId, testMessage);
-    await bot.sendMessage(chatId, '✅ Notificación de prueba enviada.');
-});
-
-// 设置定时任务
-cron.schedule('*/10 * * * *', async () => { // 每10分钟检查一次
-    console.log('⏰ Running scheduled notification check...');
-    await checkAndSendInvestmentNotifications();
-});
-
-// 清理缓存定时任务（每天一次）
+// Очистка кэша cada día
 cron.schedule('0 0 * * *', () => {
     const oneDayAgo = Date.now() - CACHE_DURATION;
-    let clearedCount = 0;
+    let cleared = 0;
 
     for (const [key, timestamp] of sentNotificationsCache.entries()) {
         if (timestamp < oneDayAgo) {
             sentNotificationsCache.delete(key);
-            clearedCount++;
+            cleared++;
         }
     }
 
-    console.log(`🧹 Cleared ${clearedCount} old cache entries`);
+    console.log(`🧹 Limpiadas ${cleared} entradas de caché`);
 });
 
-// 启动服务器
-const PORT = process.env.PORT || 3000;
-if (process.env.RAILWAY_ENVIRONMENT) {
-    require('http').createServer((req, res) => {
-        res.writeHead(200, { 'Content-Type': 'text/plain' });
-        res.end('Inversiones Bolivia Bot is running!\n');
-    }).listen(PORT, () => {
-        console.log(`🚀 Bot running on Railway, port ${PORT}`);
-        console.log(`🤖 Bot username: @${bot.options.username}`);
-        console.log(`👑 Admin ID: ${ADMIN_TELEGRAM_ID}`);
-    });
-} else {
-    console.log('🤖 Bot started in polling mode');
-    console.log(`🤖 Bot username: @${bot.options.username}`);
-    console.log(`👑 Admin ID: ${ADMIN_TELEGRAM_ID}`);
-    console.log('⏰ Scheduled tasks activated');
-}
-
-// 错误处理
-bot.on('polling_error', (error) => {
-    console.error('❌ Polling error:', error.message);
-});
-
+// Manejo de errores
 bot.on('webhook_error', (error) => {
-    console.error('❌ Webhook error:', error.message);
+    console.error('❌ Error de webhook:', error.message);
 });
 
-// 处理退出信号
+bot.on('polling_error', (error) => {
+    console.error('❌ Error de polling:', error.message);
+});
+
 process.on('SIGINT', () => {
-    console.log('👋 Shutting down bot...');
-    bot.stopPolling();
-    process.exit(0);
-});
-
-process.on('SIGTERM', () => {
-    console.log('👋 Terminating bot...');
+    console.log('👋 Apagando...');
     bot.stopPolling();
     process.exit(0);
 });
