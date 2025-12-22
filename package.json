@@ -1,21 +1,11 @@
 {
-  "name": "inversiones-bolivia-bot",
-  "version": "2.0.0",
-  "description": "Bot de Telegram para Inversiones Bolivia con todas las funcionalidades",
+  "name": "clapsearn-bot",
+  "version": "1.0.0",
+  "description": "Bot de Telegram para ClapsEarn con sistema completo de notificaciones",
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js"
   },
-  "keywords": [
-    "telegram",
-    "bot",
-    "inversiones",
-    "bolivia",
-    "api",
-    "notifications"
-  ],
-  "author": "ClapsEarn",
-  "license": "MIT",
   "dependencies": {
     "express": "^4.18.2",
     "node-fetch": "^2.6.7",
