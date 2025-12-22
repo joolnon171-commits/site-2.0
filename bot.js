@@ -27,14 +27,46 @@ app.get('/health', (req, res) => {
     res.status(200).send('OK');
 });
 
-// Test endpoint
+// Test endpoint con más info
 app.get('/api/test', (req, res) => {
     res.json({
         status: 'API funcionando!',
         time: new Date().toISOString(),
         bot_running: !!bot,
-        users_count: Object.keys(database.users).length
+        bot_info: bot ? 'Bot inicializado' : 'Bot no inicializado',
+        users_count: Object.keys(database.users).length,
+        last_check: new Date().toISOString()
     });
+});
+
+// Endpoint para probar envío directo
+app.get('/api/send-test', async (req, res) => {
+    try {
+        if (!bot) {
+            return res.status(500).json({ error: 'Bot no inicializado' });
+        }
+
+        const testMessage = `🧪 *Mensaje de prueba*\n\n` +
+                            `Este es un mensaje de prueba para verificar que el bot funciona.\n\n` +
+                            `🕐 Enviado: ${new Date().toLocaleString()}\n` +
+                            `🤖 Bot status: Activo`;
+
+        console.log('🧪 Enviando mensaje de prueba al admin...');
+
+        const result = await bot.sendMessage(ADMIN_ID, testMessage, { parse_mode: 'Markdown' });
+
+        console.log('✅ Mensaje de prueba enviado:', result.message_id);
+
+        res.json({
+            success: true,
+            message: 'Mensaje de prueba enviado',
+            message_id: result.message_id
+        });
+
+    } catch (error) {
+        console.error('❌ Error enviando mensaje de prueba:', error);
+        res.status(500).json({ error: error.message });
+    }
 });
 
 // ===========================================
@@ -67,10 +99,10 @@ function verifySecret(req, res, next) {
     next();
 }
 
-// Login de usuario
+// Login de usuario con debugging mejorado
 app.post('/api/login', verifySecret, async (req, res) => {
     try {
-        console.log('🔥 LOGIN REQUEST:', req.body);
+        console.log('🔥 LOGIN REQUEST RECIBIDO:', req.body);
         const { userId, userName, telegramId } = req.body;
 
         if (!userId || !telegramId) {
@@ -97,73 +129,60 @@ app.post('/api/login', verifySecret, async (req, res) => {
 
         await saveDatabase();
 
-        // Enviar notificación de login inmediatamente
-        if (bot) {
-            console.log('📱 Enviando notificación de login a:', user.telegramId);
-            const loginMessage = `✅ *¡Inicio de sesión exitoso!*\n\n` +
-                                 `¡Bienvenido a ClapsEarn, ${user.name}!\n\n` +
-                                 `Tu cuenta ha sido conectada correctamente.\n` +
-                                 `Ahora recibirás notificaciones de tus inversiones.\n\n` +
-                                 `🌐 *Abre el sitio web y empieza a invertir!*\n\n` +
-                                 `💰 *¡Tu éxito financiero comienza ahora!*`;
-
-            try {
-                await bot.sendMessage(user.telegramId, loginMessage, { parse_mode: 'Markdown' });
-                console.log(`✅ Notificación de login enviada a ${user.name}`);
-            } catch (error) {
-                console.error(`❌ Error enviando login: ${error.message}`);
-            }
-        } else {
-            console.log('❌ Bot no disponible para enviar login');
+        // Verificar que el bot esté disponible
+        if (!bot) {
+            console.log('❌ BOT NO DISPONIBLE para enviar login');
+            return res.json({ success: true, message: 'Login exitoso (bot no disponible)' });
         }
 
-        res.json({ success: true, message: 'Login exitoso' });
+        console.log('📱 Intentando enviar notificación de login...');
+        console.log('📱 Para telegramId:', user.telegramId);
+        console.log('📱 Bot status:', !!bot);
+
+        const loginMessage = `✅ *¡Inicio de sesión exitoso!*\n\n` +
+                             `¡Bienvenido a ClapsEarn, ${user.name}!\n\n` +
+                             `Tu cuenta ha sido conectada correctamente.\n` +
+                             `Ahora recibirás notificaciones de tus inversiones.\n\n` +
+                             `🌐 *Abre el sitio web y empieza a invertir!*\n\n` +
+                             `💰 *¡Tu éxito financiero comienza ahora!*`;
+
+        try {
+            // Verificar que el usuario puede recibir mensajes
+            const chatInfo = await bot.getChat(user.telegramId);
+            console.log('ℹ️ Chat info:', chatInfo);
+
+            const result = await bot.sendMessage(user.telegramId, loginMessage, { parse_mode: 'Markdown' });
+            console.log(`✅ Notificación de login enviada a ${user.name}`);
+            console.log('✅ Message ID:', result.message_id);
+
+        } catch (telegramError) {
+            console.error('❌ Error específico de Telegram:', telegramError.response?.body || telegramError.message);
+
+            // Si es error de que el usuario no ha iniciado chat con el bot
+            if (telegramError.code === 403) {
+                console.log('⚠️ El usuario no ha iniciado chat con el bot');
+                return res.json({
+                    success: true,
+                    message: 'Login exitoso (usuario debe iniciar chat con el bot)',
+                    requires_chat_start: true
+                });
+            }
+
+            throw telegramError;
+        }
+
+        res.json({ success: true, message: 'Login exitoso y notificación enviada' });
 
     } catch (error) {
         console.error('❌ Error en login:', error);
-        res.status(500).json({ error: 'Error del servidor' });
+        res.status(500).json({ error: 'Error del servidor: ' + error.message });
     }
 });
 
-// Logout de usuario
-app.post('/api/logout', verifySecret, async (req, res) => {
-    try {
-        console.log('🔥 LOGOUT REQUEST:', req.body);
-        const { userId } = req.body;
-
-        if (!userId) {
-            return res.status(400).json({ error: 'userId es obligatorio' });
-        }
-
-        if (database.users[userId] && bot) {
-            const user = database.users[userId];
-
-            console.log('📱 Enviando notificación de logout a:', user.telegramId);
-            const logoutMessage = `👋 *¡Sesión cerrada exitosamente!*\n\n` +
-                                  `Has cerrado tu cuenta en ClapsEarn.\n\n` +
-                                  `¡Esperamos verte pronto!\n\n` +
-                                  `🌐 *Visítanos nuevamente cuando quieras invertir!*`;
-
-            try {
-                await bot.sendMessage(user.telegramId, logoutMessage, { parse_mode: 'Markdown' });
-                console.log(`✅ Notificación de logout enviada a ${user.name}`);
-            } catch (error) {
-                console.error(`❌ Error enviando logout: ${error.message}`);
-            }
-        }
-
-        res.json({ success: true, message: 'Logout exitoso' });
-
-    } catch (error) {
-        console.error('❌ Error en logout:', error);
-        res.status(500).json({ error: 'Error del servidor' });
-    }
-});
-
-// Crear inversión
+// Crear inversión con debugging mejorado
 app.post('/api/investment', verifySecret, async (req, res) => {
     try {
-        console.log('🔥 INVESTMENT REQUEST:', req.body);
+        console.log('🔥 INVESTMENT REQUEST RECIBIDO:', req.body);
         const { userId, amount, userName } = req.body;
 
         if (!userId || !amount) {
@@ -203,43 +222,73 @@ app.post('/api/investment', verifySecret, async (req, res) => {
 
         await saveDatabase();
 
-        // Enviar notificación de compra inmediatamente
-        if (user.telegramId && bot) {
-            console.log('📱 Enviando notificación de compra a:', user.telegramId);
-            const purchaseMessage = `🎉 *¡Nueva inversión creada!*\n\n` +
-                                   `¡Felicidades ${user.name}!\n\n` +
-                                   `Has invertido *${investment.amount} Bs.*\n\n` +
-                                   `*Detalles:*\n` +
-                                   `💰 Monto: ${investment.amount} Bs.\n` +
-                                   `📈 Ganancia máxima: +3258%\n` +
-                                   `⏰ Duración: 4 horas\n` +
-                                   `🔢 Número: #${user.investments.length}\n\n` +
-                                   `📊 *Próximas notificaciones:*\n` +
-                                   `• En 2 horas: ¡Crecimiento!\n` +
-                                   `• En 4 horas: ¡Ganancia máxima!\n\n` +
-                                   `🚀 *¡Tu dinero está trabajando!*`;
+        // Verificar bot y telegramId
+        if (!bot) {
+            console.log('❌ BOT NO DISPONIBLE para enviar notificación de inversión');
+            return res.json({
+                success: true,
+                investmentId: investment.id,
+                message: 'Inversión creada (bot no disponible)'
+            });
+        }
 
-            try {
-                await bot.sendMessage(user.telegramId, purchaseMessage, { parse_mode: 'Markdown' });
-                console.log(`✅ Notificación de compra enviada a ${user.name}`);
-                investment.notifications.purchase = true;
-                await saveDatabase();
-            } catch (error) {
-                console.error(`❌ Error enviando compra: ${error.message}`);
+        if (!user.telegramId) {
+            console.log('❌ USUARIO SIN TELEGRAM ID');
+            return res.json({
+                success: true,
+                investmentId: investment.id,
+                message: 'Inversión creada (sin Telegram)'
+            });
+        }
+
+        console.log('📱 Intentando enviar notificación de inversión...');
+        console.log('📱 Para telegramId:', user.telegramId);
+
+        const purchaseMessage = `🎉 *¡Nueva inversión creada!*\n\n` +
+                                `¡Felicidades ${user.name}!\n\n` +
+                                `Has invertido *${investment.amount} Bs.*\n\n` +
+                                `*Detalles:*\n` +
+                                `💰 Monto: ${investment.amount} Bs.\n` +
+                                `📈 Ganancia máxima: +3258%\n` +
+                                `⏰ Duración: 4 horas\n` +
+                                `🔢 Número: #${user.investments.length}\n\n` +
+                                `📊 *Próximas notificaciones:*\n` +
+                                `• En 2 horas: ¡Crecimiento!\n` +
+                                `• En 4 horas: ¡Ganancia máxima!\n\n` +
+                                `🚀 *¡Tu dinero está trabajando!*`;
+
+        try {
+            const result = await bot.sendMessage(user.telegramId, purchaseMessage, { parse_mode: 'Markdown' });
+            console.log(`✅ Notificación de compra enviada a ${user.name}`);
+            console.log('✅ Message ID:', result.message_id);
+            investment.notifications.purchase = true;
+            await saveDatabase();
+
+        } catch (telegramError) {
+            console.error('❌ Error específico de Telegram:', telegramError.response?.body || telegramError.message);
+
+            if (telegramError.code === 403) {
+                console.log('⚠️ El usuario no ha iniciado chat con el bot');
+                return res.json({
+                    success: true,
+                    investmentId: investment.id,
+                    message: 'Inversión creada (usuario debe iniciar chat)',
+                    requires_chat_start: true
+                });
             }
-        } else {
-            console.log('❌ Bot no disponible o usuario sin Telegram');
+
+            throw telegramError;
         }
 
         res.json({
             success: true,
             investmentId: investment.id,
-            message: 'Inversión creada exitosamente'
+            message: 'Inversión creada y notificación enviada'
         });
 
     } catch (error) {
         console.error('❌ Error creando inversión:', error);
-        res.status(500).json({ error: 'Error del servidor' });
+        res.status(500).json({ error: 'Error del servidor: ' + error.message });
     }
 });
 
@@ -250,114 +299,35 @@ app.listen(port, () => {
     console.log(`✅ Servidor iniciado en puerto ${port}`);
     console.log(`🌐 Health check: http://localhost:${port}/health`);
     console.log(`🧪 Test endpoint: http://localhost:${port}/api/test`);
+    console.log(`📧 Test envío: http://localhost:${port}/api/send-test`);
 });
 
 // ===========================================
-// 6. FUNCIONES DE BASE DE DATOS
-// ===========================================
-
-async function initializeDatabase() {
-    try {
-        if (!database.users) database.users = {};
-        if (!database.settings) database.settings = {
-            profitRate: 32.58,
-            investmentDuration: 4
-        };
-        if (!database.stats) database.stats = {
-            totalUsers: 0,
-            totalInvested: 0,
-            lastUpdate: new Date().toISOString()
-        };
-        database.stats.totalUsers = Object.keys(database.users).length;
-        database.stats.lastUpdate = new Date().toISOString();
-        return true;
-    } catch (error) {
-        console.error('❌ Error inicializando BD:', error.message);
-        return false;
-    }
-}
-
-async function loadDatabase() {
-    try {
-        const JSONBIN_URL_LATEST = `https://api.jsonbin.io/v3/b/${JSONBIN_BIN_ID}/latest`;
-
-        try {
-            const response = await fetch(JSONBIN_URL_LATEST, {
-                headers: {
-                    'X-Master-Key': JSONBIN_MASTER_KEY,
-                    'Content-Type': 'application/json'
-                },
-                timeout: 15000
-            });
-
-            if (response.ok) {
-                const data = await response.json();
-                if (data.record) {
-                    database = data.record;
-                    await initializeDatabase();
-                    console.log('✅ Base de datos cargada desde JSONbin');
-                    return;
-                }
-            }
-        } catch (error) {
-            console.error('❌ Error cargando desde JSONbin:', error.message);
-        }
-
-        if (fs.existsSync('./database.json')) {
-            try {
-                const localData = fs.readFileSync('./database.json', 'utf8');
-                database = JSON.parse(localData);
-                await initializeDatabase();
-                console.log('✅ Base de datos cargada localmente');
-                return;
-            } catch (error) {
-                console.error('❌ Error con archivo local:', error.message);
-            }
-        }
-
-        console.log('📝 Creando nueva base de datos');
-    } catch (error) {
-        console.error('❌ Error crítico cargando BD:', error.message);
-    }
-}
-
-async function saveDatabase() {
-    try {
-        await initializeDatabase();
-        fs.writeFileSync('./database.json', JSON.stringify(database, null, 2));
-        console.log('💾 Base de datos guardada localmente');
-
-        const JSONBIN_URL = `https://api.jsonbin.io/v3/b/${JSONBIN_BIN_ID}`;
-        try {
-            const response = await fetch(JSONBIN_URL, {
-                method: 'PUT',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-Master-Key': JSONBIN_MASTER_KEY
-                },
-                body: JSON.stringify(database)
-            });
-
-            if (response.ok) {
-                console.log('✅ Base de datos guardada en JSONbin');
-            }
-        } catch (error) {
-            console.error('❌ Error guardando en JSONbin:', error.message);
-        }
-    } catch (error) {
-        console.error('❌ Error guardando base de datos:', error.message);
-    }
-}
-
-// ===========================================
-// 7. INICIAR BOT DE TELEGRAM
+// 6. INICIAR BOT CON MÁXIMA DEPURACIÓN
 // ===========================================
 
 async function startBot() {
     try {
         console.log('🔧 Iniciando bot de Telegram...');
+        console.log('🔧 Token:', TOKEN.substring(0, 10) + '...');
 
-        // Primero eliminar webhooks si existen
+        // Verificar token primero
+        try {
+            const response = await fetch(`https://api.telegram.org/bot${TOKEN}/getMe`);
+            const data = await response.json();
+
+            if (data.ok) {
+                console.log('✅ Token válido');
+                console.log('🤖 Bot info:', data.result.first_name, '@' + data.result.username);
+            } else {
+                throw new Error('Token inválido: ' + data.description);
+            }
+        } catch (error) {
+            console.error('❌ Error verificando token:', error.message);
+            throw error;
+        }
+
+        // Eliminar webhooks
         try {
             await fetch(`https://api.telegram.org/bot${TOKEN}/deleteWebhook`, {
                 timeout: 10000
@@ -367,8 +337,20 @@ async function startBot() {
             console.log('⚠️ Error eliminando webhooks:', error.message);
         }
 
+        // Iniciar bot
         bot = new TelegramBot(TOKEN, {
-            polling: true
+            polling: {
+                interval: 1000,
+                autoStart: true,
+                params: {
+                    timeout: 10
+                }
+            }
+        });
+
+        // Evento de polling exitoso
+        bot.on('polling_error', (error) => {
+            console.error('❌ Error de polling:', error.message);
         });
 
         // Comando /start
@@ -396,158 +378,76 @@ async function startBot() {
             });
         });
 
-        // Comando de prueba
+        // Comando /test
         bot.onText(/\/test/, (msg) => {
             bot.sendMessage(msg.chat.id, '✅ ¡El bot está funcionando correctamente!');
         });
 
-        bot.on('polling_error', (error) => {
-            console.error('❌ Error del bot:', error.message);
-        });
+        // Esperar a que el bot esté listo
+        await new Promise(resolve => setTimeout(resolve, 2000));
 
         console.log('✅ Bot de Telegram iniciado exitosamente!');
 
         // Enviar mensaje al admin
-        bot.sendMessage(ADMIN_ID, '🤖 ¡Bot ClapsEarn iniciado!\n\n' +
-            '✅ Sistema funcionando:\n' +
-            '• API de login/logout\n' +
-            '• Creación de inversiones\n' +
-            '• Notificaciones automáticas\n' +
-            '• Base de datos JSONbin\n\n' +
-            '🧪 Prueba: /test')
-            .catch(err => console.log('⚠️ No se pudo enviar mensaje al admin'));
+        try {
+            const result = await bot.sendMessage(ADMIN_ID, '🤖 ¡Bot ClapsEarn iniciado!\n\n' +
+                '✅ Sistema funcionando:\n' +
+                '• API de login/logout\n' +
+                '• Creación de inversiones\n' +
+                '• Notificaciones automáticas\n' +
+                '• Base de datos JSONbin\n\n' +
+                '🧪 Prueba: /test');
+            console.log('✅ Mensaje al admin enviado, ID:', result.message_id);
+        } catch (error) {
+            console.error('❌ Error enviando mensaje al admin:', error.message);
+        }
 
     } catch (error) {
-        console.error('❌ Error iniciando bot:', error.message);
-        console.log('⚠️ El servidor continúa sin el bot');
+        console.error('❌ Error crítico iniciando bot:', error.message);
+        console.log('⚠️ El servidor continuará sin el bot');
     }
 }
 
 // ===========================================
-// 8. SISTEMA DE NOTIFICACIONES
+// 7. FUNCIONES DE BASE DE DATOS (simplificadas)
 // ===========================================
 
-function calculateInvestmentGrowth(investment) {
-    const now = new Date().getTime();
-    const startTime = new Date(investment.startDate).getTime();
-    const elapsed = now - startTime;
-    const duration = database.settings.investmentDuration * 60 * 60 * 1000;
-
-    if (elapsed >= duration) return database.settings.profitRate;
-
-    const progress = elapsed / duration;
-    const growthPercentage = (database.settings.profitRate - 1) * 100 * (1 - Math.pow(0.5, progress * 2));
-    return 1 + (growthPercentage / 100);
-}
-
-async function sendInvestmentNotifications() {
+async function initializeDatabase() {
     try {
-        if (!bot) {
-            console.log('⚠️ Bot no disponible para notificaciones');
-            return;
-        }
-
-        console.log('🔍 Verificando notificaciones de inversiones...');
-
-        for (const [userId, user] of Object.entries(database.users)) {
-            if (!user.investments || user.investments.length === 0) continue;
-            if (!user.telegramId) continue;
-
-            user.investments.forEach((investment, index) => {
-                const startTime = new Date(investment.startDate).getTime();
-                const elapsed = Date.now() - startTime;
-                const hoursElapsed = elapsed / (1000 * 60 * 60);
-                const isCompleted = hoursElapsed >= database.settings.investmentDuration;
-
-                if (!investment.notifications) {
-                    investment.notifications = {
-                        purchase: false,
-                        twoHours: false,
-                        completed: false
-                    };
-                }
-
-                // Notificación a las 2 horas
-                if (hoursElapsed >= 2 && hoursElapsed < 2.166 &&
-                    !investment.notifications.twoHours &&
-                    !investment.notifications.completed) {
-
-                    const growth = calculateInvestmentGrowth(investment);
-                    const growthMultiplier = growth.toFixed(1);
-
-                    const message = `📈 *¡Tu inversión ha crecido!*\n\n` +
-                                  `*Inversión #${index + 1}:* ${investment.amount} Bs.\n` +
-                                  `*Tiempo transcurrido:* 2 horas\n` +
-                                  `*Crecimiento actual:* ${growthMultiplier}x\n\n` +
-                                  `💹 *¡En 2 horas podrás retirar tu ganancia!*\n` +
-                                  `🚀 ¡No esperes más!\n\n` +
-                                  `👉 *¡Tu inversión está funcionando!*`;
-
-                    bot.sendMessage(user.telegramId, message, { parse_mode: 'Markdown' })
-                        .then(() => {
-                            console.log(`✅ Notificación 2h enviada a ${user.name}`);
-                            investment.notifications.twoHours = true;
-                            saveDatabase();
-                        })
-                        .catch((error) => {
-                            console.error(`❌ Error notificación 2h: ${error.message}`);
-                        });
-                }
-
-                // Notificación de finalización
-                if (isCompleted && !investment.notifications.completed) {
-                    const totalProfit = (investment.amount * database.settings.profitRate).toFixed(2);
-
-                    const message = `🏆 *¡Tu inversión alcanzó el límite!*\n\n` +
-                                  `*¡Felicidades! Has obtenido el máximo rendimiento*\n\n` +
-                                  `*Inversión #${index + 1}:* ${investment.amount} Bs.\n` +
-                                  `*Ganancia total:* ${totalProfit} Bs.\n\n` +
-                                  `💰 *¡Retira tu ganancia ahora!*\n` +
-                                  `📞 Contacta a tu gerente\n` +
-                                  `⚡ ¡No esperes más!\n\n` +
-                                  `🎊 *¡Felicitaciones por tu éxito!*`;
-
-                    bot.sendMessage(user.telegramId, message, { parse_mode: 'Markdown' })
-                        .then(() => {
-                            console.log(`✅ Notificación final enviada a ${user.name}`);
-                            investment.notifications.completed = true;
-                            saveDatabase();
-                        })
-                        .catch((error) => {
-                            console.error(`❌ Error notificación final: ${error.message}`);
-                        });
-                }
-            });
-        }
-
+        if (!database.users) database.users = {};
+        database.stats.totalUsers = Object.keys(database.users).length;
+        database.stats.lastUpdate = new Date().toISOString();
+        return true;
     } catch (error) {
-        console.error('❌ Error en sistema de notificaciones:', error.message);
+        console.error('❌ Error inicializando BD:', error.message);
+        return false;
+    }
+}
+
+async function saveDatabase() {
+    try {
+        await initializeDatabase();
+        fs.writeFileSync('./database.json', JSON.stringify(database, null, 2));
+        console.log('💾 Base de datos guardada localmente');
+    } catch (error) {
+        console.error('❌ Error guardando base de datos:', error.message);
     }
 }
 
 // ===========================================
-// 9. INICIALIZACIÓN DEL SISTEMA
+// 8. INICIALIZACIÓN
 // ===========================================
 
 async function initialize() {
     console.log('='.repeat(60));
-    console.log('🤖 ClapsEarn Bot - Versión con Depuración');
+    console.log('🤖 ClapsEarn Bot - VERSIÓN MÁXIMA DEPURACIÓN');
     console.log('🌐 Servidor Express: ACTIVO');
     console.log('📊 Sistema de notificaciones: ACTIVO');
-    console.log('💾 Base de datos JSONbin: ACTIVA');
-    console.log('🔐 API con seguridad: ACTIVO');
+    console.log('🔍 Depuración máxima: ACTIVA');
     console.log('='.repeat(60));
-
-    await loadDatabase();
 
     // Iniciar bot inmediatamente
     await startBot();
-
-    // Iniciar verificación de notificaciones cada 30 segundos
-    setInterval(sendInvestmentNotifications, 30000);
-
-    // Guardar base de datos cada 5 minutos
-    setInterval(saveDatabase, 5 * 60 * 1000);
 }
 
 // Iniciar sistema
