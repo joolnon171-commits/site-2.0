@@ -5,6 +5,9 @@ const express = require('express');
 require('dotenv').config();
 
 // Конфигурация
+const BOT_API_URL = 'https://site-2.0.railway.app/api/investment-created';
+const BOT_WELCOME_API_URL = 'https://site-2.0.railway.app/api/user-registered';
+const BOT_HEALTH_API_URL = 'https://site-2.0.railway.app/api/health';
 const BOT_TOKEN = process.env.BOT_TOKEN || '8272381619:AAGy9netoupQboX1WgI5I59fQvZkz_4OlLs';
 const JSONBIN_BIN_ID = process.env.JSONBIN_BIN_ID || '69468d57d0ea881f40361a98';
 const JSONBIN_MASTER_KEY = process.env.JSONBIN_MASTER_KEY || '$2a$10$eCHhQtmSAhD8XqkrlFgE1O6N6OKwgmHrIg.G9hlrkDKIaex3GMuiW';
@@ -20,6 +23,16 @@ const MAX_PROFIT_PERCENTAGE = 3258;
 const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+app.use((req, res, next) => {
+    res.header('Access-Control-Allow-Origin', 'https://Creecly.pythonanywhere.com');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+
+    if (req.method === 'OPTIONS') {
+        return res.sendStatus(200);
+    }
+    next();
+});
 
 // Инициализация бота в режиме вебхуков
 const bot = new TelegramBot(BOT_TOKEN);
