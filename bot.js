@@ -12,7 +12,7 @@ const BOT_TOKEN = process.env.BOT_TOKEN || '8272381619:AAGy9netoupQboX1WgI5I59fQ
 const JSONBIN_BIN_ID = process.env.JSONBIN_BIN_ID || '69468d57d0ea881f40361a98';
 const JSONBIN_MASTER_KEY = process.env.JSONBIN_MASTER_KEY || '$2a$10$eCHhQtmSAhD8XqkrlFgE1O6N6OKwgmHrIg.G9hlrkDKIaex3GMuiW';
 const ADMIN_TELEGRAM_ID = process.env.ADMIN_TELEGRAM_ID || '8382571809';
-const WEBHOOK_URL = process.env.WEBHOOK_URL || 'https://ваш-сайт.pythonanywhere.com/bot-webhook'; // Укажите ваш URL
+const WEBHOOK_URL = process.env.WEBHOOK_URL || 'https://Creecly.pythonanywhere.com/bot-webhook'; // Укажите ваш URL
 const JSONBIN_URL = `https://api.jsonbin.io/v3/b/${JSONBIN_BIN_ID}/latest`;
 
 // Параметры
