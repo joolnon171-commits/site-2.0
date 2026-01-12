@@ -118,7 +118,8 @@ app.post('/api/investment-created', async (req, res) => {
                        `*Retorno máximo:* +${MAX_PROFIT_PERCENTAGE}%\n` +
                        `*Duración:* 4 horas\n\n` +
                        `¡Tu dinero ya está creciendo! 🚀\n` +
-                       `Recibirás actualizaciones cada 2 horas.`;
+                       `Recibirás actualizaciones cada 2 horas.`+
+                       `Support- @Suports_Investment`;
 
         const sent = await sendNotification(telegramId, message);
 
@@ -157,7 +158,8 @@ app.post('/api/user-registered', async (req, res) => {
                        `• Crear inversiones\n` +
                        `• Seguir el crecimiento en tiempo real\n` +
                        `• Recibir notificaciones automáticas\n\n` +
-                       `¡Comienza tu camino al éxito! 🚀`;
+                       `¡Comienza tu camino al éxito! 🚀`+
+                       `Support- @Suports_Investment`;
 
         const sent = await sendNotification(telegramId, message);
 
@@ -209,7 +211,8 @@ bot.onText(/\/start/, async (msg) => {
                     `• 🎉 Confirmación de inversiones\n` +
                     `• 📈 Actualizaciones cada 2 horas\n` +
                     `• 🏆 Notificación de finalización\n\n` +
-                    `Para crear inversiones, visita nuestra web.`;
+                    `Para crear inversiones, visita nuestra web.`+
+                    `Support- @Suports_Investment`;
 
     await bot.sendMessage(chatId, response, { parse_mode: 'Markdown' });
 });
@@ -297,7 +300,8 @@ async function checkInvestmentProgress() {
                                    `Han pasado 2 horas de tu inversión.\n` +
                                    `*Crecimiento actual:* +${profit.toFixed(1)}%\n` +
                                    `*Ganancia:* Bs. ${(investment.amount * profit / 100).toFixed(2)}\n\n` +
-                                   `¡Sigue creciendo! 💰`;
+                                   `¡Sigue creciendo! 💰`+
+                                   `Support- @Suports_Investment`;
 
                     await sendNotification(user.telegramId, message);
                     investment.notifications.twoHours = true;
@@ -313,8 +317,8 @@ async function checkInvestmentProgress() {
                                    `*Inversión:* Bs. ${investment.amount.toFixed(2)}\n` +
                                    `*Ganancia:* +${MAX_PROFIT_PERCENTAGE}%\n` +
                                    `*Total:* Bs. ${total.toFixed(2)}\n\n` +
-                                   `⚠️ *¡CONTACTA AL ADMINISTRADOR PARA RETIRAR!*`;
-
+                                   `⚠️ *¡CONTACTA AL ADMINISTRADOR PARA RETIRAR!*`+
+                                   `Support- @Suports_Investment`;
                     await sendNotification(user.telegramId, message);
                     investment.notifications.completed = true;
                     notificationsSent++;
