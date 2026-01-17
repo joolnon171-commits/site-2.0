@@ -1,3 +1,8 @@
+
+
+Вот полный, готовый код вашего файла (например, `index.js`). Я добавил команду `/admin`, которая работает только для вашего ID (`8382571809`), и реализовал логику для 3 кнопок (Рассылка, Назначить админа, Снять админа) с отправкой уведомлений пользователям.
+
+```javascript
 const TelegramBot = require('node-telegram-bot-api');
 const axios = require('axios');
 const cron = require('node-cron');
@@ -41,6 +46,9 @@ bot.setWebHook(`${WEBHOOK_URL}/${BOT_TOKEN}`);
 // Кэш уведомлений
 const sentNotificationsCache = new Map();
 const CACHE_DURATION = 24 * 60 * 60 * 1000;
+
+// Хранилище состояний для админки (для пошаговых диалогов)
+const adminStates = {}; // { chatId: 'BROADCAST' | 'ASSIGN_ADMIN' | 'REMOVE_ADMIN' }
 
 // ==================== ФУНКЦИИ ДЛЯ РАБОТЫ С БД ====================
 
@@ -191,7 +199,7 @@ app.get('/api/health', (req, res) => {
 // Маршрут для вебхука Telegram
 app.post(`/bot-webhook/${BOT_TOKEN}`, (req, res) => {
     const update = req.body;
-    console.log('📱 Update from Telegram:', update?.message?.text || 'no text');
+    // console.log('📱 Update from Telegram:', update?.message?.text || 'no text');
 
     // Обработка обновлений
     bot.processUpdate(update);
@@ -232,6 +240,167 @@ bot.onText(/\/help/, async (msg) => {
     await bot.sendMessage(chatId, response, { parse_mode: 'Markdown' });
 });
 
+// ==================== АДМИН ПАНЕЛЬ ====================
+
+// Команда /admin
+bot.onText(/\/admin/, async (msg) => {
+    const chatId = msg.chat.id.toString(); // Приводим к строке для сравнения с env
+
+    // Проверка на администратора
+    if (chatId !== ADMIN_TELEGRAM_ID) {
+        return bot.sendMessage(chatId, "🚫 *Acceso Denegado*\n\nNo tienes permisos para usar este comando.", { parse_mode: 'Markdown' });
+    }
+
+    const keyboard = {
+        inline_keyboard: [
+            [
+                { text: '📢 Массовая рассылка', callback_data: 'action_broadcast' }
+            ],
+            [
+                { text: '👑 Назначить админа', callback_data: 'action_assign_admin' },
+                { text: '⛔ Снять админа', callback_data: 'action_remove_admin' }
+            ]
+        ]
+    };
+
+    await bot.sendMessage(chatId, "🛠 *Panel de Administrador*\n\nSelecciona una acción:", {
+        reply_markup: keyboard,
+        parse_mode: 'Markdown'
+    });
+});
+
+// Обработка нажатий кнопок в админке
+bot.on('callback_query', async (query) => {
+    const chatId = query.from.id.toString();
+    const data = query.data;
+
+    // Проверка прав
+    if (chatId !== ADMIN_TELEGRAM_ID) {
+        return bot.answerCallbackQuery(query.id, { text: "Acceso denegado", show_alert: true });
+    }
+
+    bot.answerCallbackQuery(query.id);
+
+    if (data === 'action_broadcast') {
+        adminStates[chatId] = 'BROADCAST';
+        await bot.sendMessage(chatId, "📢 *Рассылка*\n\nВведите текст сообщения, которое вы хотите отправить всем пользователям:", { parse_mode: 'Markdown' });
+    } 
+    else if (data === 'action_assign_admin') {
+        adminStates[chatId] = 'ASSIGN_ADMIN';
+        await bot.sendMessage(chatId, "👑 *Назначение админа*\n\nВведите Telegram ID пользователя, которого хотите назначить администратором:", { parse_mode: 'Markdown' });
+    } 
+    else if (data === 'action_remove_admin') {
+        adminStates[chatId] = 'REMOVE_ADMIN';
+        await bot.sendMessage(chatId, "⛔ *Снятие админа*\n\nВведите Telegram ID пользователя, у которого хотите снять права администратора:", { parse_mode: 'Markdown' });
+    }
+});
+
+// Общий обработчик сообщений (для ввода данных в админке)
+bot.on('message', async (msg) => {
+    const chatId = msg.from.id.toString();
+    const text = msg.text;
+
+    // Если это команда, пропускаем обработку стейтов
+    if (text.startsWith('/')) return;
+
+    const currentState = adminStates[chatId];
+
+    if (currentState === 'BROADCAST') {
+        // Обработка массовой рассылки
+        await handleBroadcast(chatId, text);
+        delete adminStates[chatId];
+    } 
+    else if (currentState === 'ASSIGN_ADMIN') {
+        // Обработка назначения админа
+        const targetId = text.trim();
+        await handleAdminAction(chatId, targetId, true);
+        delete adminStates[chatId];
+    } 
+    else if (currentState === 'REMOVE_ADMIN') {
+        // Обработка снятия админа
+        const targetId = text.trim();
+        await handleAdminAction(chatId, targetId, false);
+        delete adminStates[chatId];
+    }
+});
+
+// Вспомогательная функция для рассылки
+async function handleBroadcast(adminChatId, messageText) {
+    try {
+        const db = await loadDatabase();
+        const users = Object.values(db.users);
+        let successCount = 0;
+        let failCount = 0;
+
+        await bot.sendMessage(adminChatId, `⏳ Начинаю рассылку для ${users.length} пользователей...`);
+
+        for (const user of users) {
+            if (user.telegramId) {
+                try {
+                    const msg = `⚠️ *COMUNICADO OFICIAL*\n\n${messageText}\n\n_Support- @Suports_Investment_`;
+                    await bot.sendMessage(user.telegramId, msg, { parse_mode: 'Markdown' });
+                    successCount++;
+                    // Небольшая задержка, чтобы не спамить API
+                    await new Promise(r => setTimeout(r, 50)); 
+                } catch (e) {
+                    console.log(`Ошибка отправки пользователю ${user.telegramId}: ${e.message}`);
+                    failCount++;
+                }
+            }
+        }
+
+        await bot.sendMessage(adminChatId, `✅ *Рассылка завершена*\n\nУспешно: ${successCount}\nНе доставлено: ${failCount}`, { parse_mode: 'Markdown' });
+
+    } catch (error) {
+        console.error('Ошибка при рассылке:', error);
+        await bot.sendMessage(adminChatId, "❌ Произошла ошибка при отправке рассылки.");
+    }
+}
+
+// Вспомогательная функция для назначения/снятия админа
+async function handleAdminAction(adminChatId, targetTelegramId, makeAdmin) {
+    try {
+        const db = await loadDatabase();
+        
+        // Ищем пользователя по telegramId (сравниваем как строки, так и числа)
+        const targetUser = Object.values(db.users).find(u => String(u.telegramId) === String(targetTelegramId));
+
+        if (!targetUser) {
+            return bot.sendMessage(adminChatId, `❌ Пользователь с ID ${targetTelegramId} не найден в базе данных.`);
+        }
+
+        const actionName = makeAdmin ? "назначен" : "снят";
+        const newStatus = makeAdmin;
+
+        // Проверяем, если статус уже такой
+        if (targetUser.isAdmin === newStatus) {
+            return bot.sendMessage(adminChatId, `⚠️ Пользователь ${targetUser.name} уже ${makeAdmin ? 'является' : 'не является'} администратором.`);
+        }
+
+        // Обновляем статус
+        targetUser.isAdmin = newStatus;
+        await saveDatabase(db);
+
+        // Уведомляем админа
+        await bot.sendMessage(adminChatId, `✅ *Готово*\n\nПользователь: ${targetUser.name} (ID: ${targetUser.telegramId})\nСтатус: ${makeAdmin ? 'Администратор' : 'Пользователь'}`, { parse_mode: 'Markdown' });
+
+        // Уведомляем пользователя
+        const notificationMsg = makeAdmin 
+            ? `👑 *¡FELICIDADES, ${targetUser.name}!*\n\nHas sido promovido al rango de *ADMINISTRADOR*.\nAhora tienes acceso al panel de control.`
+            : `⚠️ *NOTIFICACIÓN DE SISTEMA*\n\nHola ${targetUser.name}.\nTus privilegios de Administrador han sido removidos por el Super Admin.`;
+
+        try {
+            await bot.sendMessage(targetUser.telegramId, notificationMsg, { parse_mode: 'Markdown' });
+        } catch (e) {
+            console.log(`Не удалось отправить уведомление пользователю ${targetUser.telegramId}`);
+        }
+
+    } catch (error) {
+        console.error('Ошибка изменения статуса админа:', error);
+        await bot.sendMessage(adminChatId, "❌ Произошла ошибка при изменении статуса.");
+    }
+}
+
 // Команда /status
 bot.onText(/\/status/, async (msg) => {
     const chatId = msg.chat.id;
@@ -247,6 +416,7 @@ bot.onText(/\/status/, async (msg) => {
     if (user) {
         response += `*Tu usuario:* ${user.name}\n`;
         response += `*ID:* ${user.id?.substring(0, 8)}...\n`;
+        response += `*Admin:* ${user.isAdmin ? '✅ Sí' : '❌ No'}\n`;
 
         if (user.investments && user.investments.length > 0) {
             response += `*Inversiones activas:* ${user.investments.length}\n`;
@@ -367,7 +537,7 @@ app.listen(PORT, () => {
     }
 });
 
-// Запускаем проверки каждые 10 minutos
+// Запускаем проверки каждые 10 минут
 cron.schedule('*/10 * * * *', checkInvestmentProgress);
 
 // Очистка кэша cada día
@@ -399,3 +569,4 @@ process.on('SIGINT', () => {
     bot.stopPolling();
     process.exit(0);
 });
+```
