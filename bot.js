@@ -1,8 +1,3 @@
-
-
-Вот полный, готовый код вашего файла (например, `index.js`). Я добавил команду `/admin`, которая работает только для вашего ID (`8382571809`), и реализовал логику для 3 кнопок (Рассылка, Назначить админа, Снять админа) с отправкой уведомлений пользователям.
-
-```javascript
 const TelegramBot = require('node-telegram-bot-api');
 const axios = require('axios');
 const cron = require('node-cron');
@@ -47,8 +42,8 @@ bot.setWebHook(`${WEBHOOK_URL}/${BOT_TOKEN}`);
 const sentNotificationsCache = new Map();
 const CACHE_DURATION = 24 * 60 * 60 * 1000;
 
-// Хранилище состояний для админки (для пошаговых диалогов)
-const adminStates = {}; // { chatId: 'BROADCAST' | 'ASSIGN_ADMIN' | 'REMOVE_ADMIN' }
+// Состояния пользователей для админ-панели
+const userStates = new Map();
 
 // ==================== ФУНКЦИИ ДЛЯ РАБОТЫ С БД ====================
 
@@ -99,6 +94,282 @@ async function sendNotification(chatId, message) {
     } catch (error) {
         console.error(`❌ Ошибка отправки ${chatId}:`, error.message);
         return false;
+    }
+}
+
+// ==================== ФУНКЦИИ АДМИН-ПАНЕЛИ ====================
+
+async function showAdminPanel(chatId) {
+    try {
+        const database = await loadDatabase();
+        const admins = database.settings?.admins || ['Admin'];
+        
+        const message = `👑 *ПАНЕЛЬ АДМИНИСТРАТОРА*\n\n` +
+                       `*Текущие администраторы:*\n` +
+                       `${admins.map(admin => `• ${admin}`).join('\n') || 'Нет администраторов'}\n\n` +
+                       `*Выберите действие:*`;
+        
+        const options = {
+            parse_mode: 'Markdown',
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: '📢 Массовая рассылка', callback_data: 'admin_broadcast' }],
+                    [{ text: '👑 Назначить администратора', callback_data: 'admin_add' }],
+                    [{ text: '❌ Снять администратора', callback_data: 'admin_remove' }],
+                    [{ text: '📊 Статистика', callback_data: 'admin_stats' }],
+                    [{ text: '🔙 Назад', callback_data: 'admin_back' }]
+                ]
+            }
+        };
+        
+        await bot.sendMessage(chatId, message, options);
+        return true;
+    } catch (error) {
+        console.error('❌ Ошибка показа админ-панели:', error);
+        return false;
+    }
+}
+
+async function broadcastMessage(chatId) {
+    userStates.set(chatId, { action: 'broadcast' });
+    
+    const message = `📢 *МАССОВАЯ РАССЫЛКА*\n\n` +
+                   `Пожалуйста, отправьте сообщение для рассылки всем пользователям.\n` +
+                   `Вы можете использовать Markdown форматирование.\n\n` +
+                   `*Пример:*\n` +
+                   `Привет всем! Это тестовая рассылка.`;
+    
+    await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+}
+
+async function addAdmin(chatId) {
+    userStates.set(chatId, { action: 'add_admin' });
+    
+    const message = `👑 *НАЗНАЧЕНИЕ АДМИНИСТРАТОРА*\n\n` +
+                   `Пожалуйста, отправьте Telegram ID пользователя, которого хотите назначить администратором.\n\n` +
+                   `*Как получить ID:*\n` +
+                   `1. Попросите пользователя написать @userinfobot\n` +
+                   `2. Или используйте команду /id в вашем боте\n\n` +
+                   `Отправьте только цифры ID:`;
+    
+    await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+}
+
+async function removeAdmin(chatId) {
+    userStates.set(chatId, { action: 'remove_admin' });
+    
+    const database = await loadDatabase();
+    const admins = database.settings?.admins || ['Admin'];
+    
+    const message = `❌ *СНЯТИЕ АДМИНИСТРАТОРА*\n\n` +
+                   `*Текущие администраторы:*\n` +
+                   `${admins.map(admin => `• ${admin}`).join('\n') || 'Нет администраторов'}\n\n` +
+                   `Пожалуйста, отправьте Telegram ID администратора, которого хотите снять:\n\n` +
+                   `Отправьте только цифры ID:`;
+    
+    await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+}
+
+async function processAddAdmin(chatId, targetId) {
+    try {
+        const database = await loadDatabase();
+        
+        // Инициализируем настройки если их нет
+        if (!database.settings) {
+            database.settings = { admins: ['Admin'] };
+        }
+        if (!database.settings.admins) {
+            database.settings.admins = ['Admin'];
+        }
+        
+        // Проверяем, существует ли уже такой админ
+        if (database.settings.admins.includes(targetId)) {
+            await bot.sendMessage(chatId, `❌ Пользователь ${targetId} уже является администратором.`);
+            return false;
+        }
+        
+        // Добавляем админа
+        database.settings.admins.push(targetId);
+        
+        // Сохраняем в БД
+        const saved = await saveDatabase(database);
+        
+        if (saved) {
+            // Отправляем сообщение новому админу
+            try {
+                const adminMessage = `👑 *ВЫ НАЗНАЧЕНЫ АДМИНИСТРАТОРОМ!*\n\n` +
+                                   `Поздравляем! Вы были назначены администратором бота Inversiones Bolivia.\n\n` +
+                                   `Теперь у вас есть доступ к админ-панели через команду /admin\n` +
+                                   `Используйте свою власть с умом! 🛡️` +
+                                   `Support- @Suports_Investment`;
+                
+                await sendNotification(targetId, adminMessage);
+                await bot.sendMessage(chatId, `✅ Пользователь ${targetId} успешно назначен администратором!\nЕму отправлено уведомление.`);
+            } catch (error) {
+                await bot.sendMessage(chatId, `✅ Пользователь ${targetId} назначен администратором, но уведомление не доставлено (возможно, бот заблокирован).`);
+            }
+            
+            // Показываем обновленную админ-панель
+            await showAdminPanel(chatId);
+            return true;
+        } else {
+            await bot.sendMessage(chatId, `❌ Ошибка сохранения в базу данных.`);
+            return false;
+        }
+        
+    } catch (error) {
+        console.error('❌ Ошибка добавления админа:', error);
+        await bot.sendMessage(chatId, `❌ Произошла ошибка: ${error.message}`);
+        return false;
+    }
+}
+
+async function processRemoveAdmin(chatId, targetId) {
+    try {
+        // Нельзя снять главного админа
+        if (targetId === ADMIN_TELEGRAM_ID) {
+            await bot.sendMessage(chatId, `❌ Нельзя снять главного администратора (ID: ${ADMIN_TELEGRAM_ID})`);
+            return false;
+        }
+        
+        const database = await loadDatabase();
+        
+        if (!database.settings?.admins) {
+            await bot.sendMessage(chatId, `❌ В базе данных нет списка администраторов.`);
+            return false;
+        }
+        
+        // Проверяем, существует ли такой админ
+        const adminIndex = database.settings.admins.indexOf(targetId);
+        if (adminIndex === -1) {
+            await bot.sendMessage(chatId, `❌ Пользователь ${targetId} не является администратором.`);
+            return false;
+        }
+        
+        // Удаляем админа
+        database.settings.admins.splice(adminIndex, 1);
+        
+        // Сохраняем в БД
+        const saved = await saveDatabase(database);
+        
+        if (saved) {
+            // Отправляем сообщение снятому админу
+            try {
+                const adminMessage = `⚠️ *ВЫ СНЯТЫ С ДОЛЖНОСТИ АДМИНИСТРАТОРА*\n\n` +
+                                   `Ваши права администратора в боте Inversiones Bolivia были отозваны.\n\n` +
+                                   `Теперь у вас нет доступа к админ-панели.\n` +
+                                   `По вопросам обращайтесь к главному администратору.` +
+                                   `Support- @Suports_Investment`;
+                
+                await sendNotification(targetId, adminMessage);
+                await bot.sendMessage(chatId, `✅ Пользователь ${targetId} успешно снят с должности администратора!\nЕму отправлено уведомление.`);
+            } catch (error) {
+                await bot.sendMessage(chatId, `✅ Пользователь ${targetId} снят с должности, но уведомление не доставлено.`);
+            }
+            
+            // Показываем обновленную админ-панель
+            await showAdminPanel(chatId);
+            return true;
+        } else {
+            await bot.sendMessage(chatId, `❌ Ошибка сохранения в базу данных.`);
+            return false;
+        }
+        
+    } catch (error) {
+        console.error('❌ Ошибка снятия админа:', error);
+        await bot.sendMessage(chatId, `❌ Произошла ошибка: ${error.message}`);
+        return false;
+    }
+}
+
+async function processBroadcast(chatId, messageText) {
+    try {
+        await bot.sendMessage(chatId, `⏳ Начинаю массовую рассылку...\nСообщение отправляется всем пользователям.`);
+        
+        const database = await loadDatabase();
+        const users = database.users || {};
+        let sentCount = 0;
+        let failedCount = 0;
+        
+        // Отправляем всем пользователям
+        for (const userId in users) {
+            const user = users[userId];
+            if (user.telegramId) {
+                try {
+                    const fullMessage = `📢 *ВАЖНОЕ ОБЪЯВЛЕНИЕ*\n\n${messageText}\n\n` +
+                                      `_Это автоматическое сообщение от администрации._` +
+                                      `Support- @Suports_Investment`;
+                    
+                    await sendNotification(user.telegramId, fullMessage);
+                    sentCount++;
+                    
+                    // Небольшая задержка чтобы не превысить лимиты Telegram
+                    await new Promise(resolve => setTimeout(resolve, 100));
+                    
+                } catch (error) {
+                    console.error(`❌ Ошибка отправки пользователю ${user.telegramId}:`, error.message);
+                    failedCount++;
+                }
+            }
+        }
+        
+        // Отправляем статистику админу
+        const statsMessage = `📊 *РЕЗУЛЬТАТЫ РАССЫЛКИ*\n\n` +
+                           `✅ Успешно отправлено: ${sentCount}\n` +
+                           `❌ Не отправлено: ${failedCount}\n` +
+                           `📝 Общее количество пользователей: ${Object.keys(users).length}\n\n` +
+                           `Рассылка завершена!`;
+        
+        await bot.sendMessage(chatId, statsMessage, { parse_mode: 'Markdown' });
+        
+        // Очищаем состояние
+        userStates.delete(chatId);
+        
+    } catch (error) {
+        console.error('❌ Ошибка массовой рассылки:', error);
+        await bot.sendMessage(chatId, `❌ Ошибка при рассылке: ${error.message}`);
+    }
+}
+
+async function showAdminStats(chatId) {
+    try {
+        const database = await loadDatabase();
+        const users = database.users || {};
+        const admins = database.settings?.admins || ['Admin'];
+        
+        let activeInvestments = 0;
+        let totalInvestments = 0;
+        
+        // Считаем инвестиции
+        for (const userId in users) {
+            const user = users[userId];
+            if (user.investments && Array.isArray(user.investments)) {
+                totalInvestments += user.investments.length;
+                
+                // Считаем активные инвестиции
+                const now = Date.now();
+                for (const investment of user.investments) {
+                    const startTime = new Date(investment.startDate).getTime();
+                    if (now - startTime < INVESTMENT_DURATION) {
+                        activeInvestments++;
+                    }
+                }
+            }
+        }
+        
+        const message = `📊 *СТАТИСТИКА СИСТЕМЫ*\n\n` +
+                       `👥 *Пользователи:* ${Object.keys(users).length}\n` +
+                       `👑 *Администраторы:* ${admins.length}\n` +
+                       `💼 *Всего инвестиций:* ${totalInvestments}\n` +
+                       `🔄 *Активных инвестиций:* ${activeInvestments}\n` +
+                       `📨 *Уведомлений в кэше:* ${sentNotificationsCache.size}\n\n` +
+                       `*Дата:* ${new Date().toLocaleString('es-ES')}`;
+        
+        await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+        
+    } catch (error) {
+        console.error('❌ Ошибка показа статистики:', error);
+        await bot.sendMessage(chatId, `❌ Ошибка получения статистики: ${error.message}`);
     }
 }
 
@@ -199,7 +470,7 @@ app.get('/api/health', (req, res) => {
 // Маршрут для вебхука Telegram
 app.post(`/bot-webhook/${BOT_TOKEN}`, (req, res) => {
     const update = req.body;
-    // console.log('📱 Update from Telegram:', update?.message?.text || 'no text');
+    console.log('📱 Update from Telegram:', update?.message?.text || 'no text');
 
     // Обработка обновлений
     bot.processUpdate(update);
@@ -240,167 +511,6 @@ bot.onText(/\/help/, async (msg) => {
     await bot.sendMessage(chatId, response, { parse_mode: 'Markdown' });
 });
 
-// ==================== АДМИН ПАНЕЛЬ ====================
-
-// Команда /admin
-bot.onText(/\/admin/, async (msg) => {
-    const chatId = msg.chat.id.toString(); // Приводим к строке для сравнения с env
-
-    // Проверка на администратора
-    if (chatId !== ADMIN_TELEGRAM_ID) {
-        return bot.sendMessage(chatId, "🚫 *Acceso Denegado*\n\nNo tienes permisos para usar este comando.", { parse_mode: 'Markdown' });
-    }
-
-    const keyboard = {
-        inline_keyboard: [
-            [
-                { text: '📢 Массовая рассылка', callback_data: 'action_broadcast' }
-            ],
-            [
-                { text: '👑 Назначить админа', callback_data: 'action_assign_admin' },
-                { text: '⛔ Снять админа', callback_data: 'action_remove_admin' }
-            ]
-        ]
-    };
-
-    await bot.sendMessage(chatId, "🛠 *Panel de Administrador*\n\nSelecciona una acción:", {
-        reply_markup: keyboard,
-        parse_mode: 'Markdown'
-    });
-});
-
-// Обработка нажатий кнопок в админке
-bot.on('callback_query', async (query) => {
-    const chatId = query.from.id.toString();
-    const data = query.data;
-
-    // Проверка прав
-    if (chatId !== ADMIN_TELEGRAM_ID) {
-        return bot.answerCallbackQuery(query.id, { text: "Acceso denegado", show_alert: true });
-    }
-
-    bot.answerCallbackQuery(query.id);
-
-    if (data === 'action_broadcast') {
-        adminStates[chatId] = 'BROADCAST';
-        await bot.sendMessage(chatId, "📢 *Рассылка*\n\nВведите текст сообщения, которое вы хотите отправить всем пользователям:", { parse_mode: 'Markdown' });
-    } 
-    else if (data === 'action_assign_admin') {
-        adminStates[chatId] = 'ASSIGN_ADMIN';
-        await bot.sendMessage(chatId, "👑 *Назначение админа*\n\nВведите Telegram ID пользователя, которого хотите назначить администратором:", { parse_mode: 'Markdown' });
-    } 
-    else if (data === 'action_remove_admin') {
-        adminStates[chatId] = 'REMOVE_ADMIN';
-        await bot.sendMessage(chatId, "⛔ *Снятие админа*\n\nВведите Telegram ID пользователя, у которого хотите снять права администратора:", { parse_mode: 'Markdown' });
-    }
-});
-
-// Общий обработчик сообщений (для ввода данных в админке)
-bot.on('message', async (msg) => {
-    const chatId = msg.from.id.toString();
-    const text = msg.text;
-
-    // Если это команда, пропускаем обработку стейтов
-    if (text.startsWith('/')) return;
-
-    const currentState = adminStates[chatId];
-
-    if (currentState === 'BROADCAST') {
-        // Обработка массовой рассылки
-        await handleBroadcast(chatId, text);
-        delete adminStates[chatId];
-    } 
-    else if (currentState === 'ASSIGN_ADMIN') {
-        // Обработка назначения админа
-        const targetId = text.trim();
-        await handleAdminAction(chatId, targetId, true);
-        delete adminStates[chatId];
-    } 
-    else if (currentState === 'REMOVE_ADMIN') {
-        // Обработка снятия админа
-        const targetId = text.trim();
-        await handleAdminAction(chatId, targetId, false);
-        delete adminStates[chatId];
-    }
-});
-
-// Вспомогательная функция для рассылки
-async function handleBroadcast(adminChatId, messageText) {
-    try {
-        const db = await loadDatabase();
-        const users = Object.values(db.users);
-        let successCount = 0;
-        let failCount = 0;
-
-        await bot.sendMessage(adminChatId, `⏳ Начинаю рассылку для ${users.length} пользователей...`);
-
-        for (const user of users) {
-            if (user.telegramId) {
-                try {
-                    const msg = `⚠️ *COMUNICADO OFICIAL*\n\n${messageText}\n\n_Support- @Suports_Investment_`;
-                    await bot.sendMessage(user.telegramId, msg, { parse_mode: 'Markdown' });
-                    successCount++;
-                    // Небольшая задержка, чтобы не спамить API
-                    await new Promise(r => setTimeout(r, 50)); 
-                } catch (e) {
-                    console.log(`Ошибка отправки пользователю ${user.telegramId}: ${e.message}`);
-                    failCount++;
-                }
-            }
-        }
-
-        await bot.sendMessage(adminChatId, `✅ *Рассылка завершена*\n\nУспешно: ${successCount}\nНе доставлено: ${failCount}`, { parse_mode: 'Markdown' });
-
-    } catch (error) {
-        console.error('Ошибка при рассылке:', error);
-        await bot.sendMessage(adminChatId, "❌ Произошла ошибка при отправке рассылки.");
-    }
-}
-
-// Вспомогательная функция для назначения/снятия админа
-async function handleAdminAction(adminChatId, targetTelegramId, makeAdmin) {
-    try {
-        const db = await loadDatabase();
-        
-        // Ищем пользователя по telegramId (сравниваем как строки, так и числа)
-        const targetUser = Object.values(db.users).find(u => String(u.telegramId) === String(targetTelegramId));
-
-        if (!targetUser) {
-            return bot.sendMessage(adminChatId, `❌ Пользователь с ID ${targetTelegramId} не найден в базе данных.`);
-        }
-
-        const actionName = makeAdmin ? "назначен" : "снят";
-        const newStatus = makeAdmin;
-
-        // Проверяем, если статус уже такой
-        if (targetUser.isAdmin === newStatus) {
-            return bot.sendMessage(adminChatId, `⚠️ Пользователь ${targetUser.name} уже ${makeAdmin ? 'является' : 'не является'} администратором.`);
-        }
-
-        // Обновляем статус
-        targetUser.isAdmin = newStatus;
-        await saveDatabase(db);
-
-        // Уведомляем админа
-        await bot.sendMessage(adminChatId, `✅ *Готово*\n\nПользователь: ${targetUser.name} (ID: ${targetUser.telegramId})\nСтатус: ${makeAdmin ? 'Администратор' : 'Пользователь'}`, { parse_mode: 'Markdown' });
-
-        // Уведомляем пользователя
-        const notificationMsg = makeAdmin 
-            ? `👑 *¡FELICIDADES, ${targetUser.name}!*\n\nHas sido promovido al rango de *ADMINISTRADOR*.\nAhora tienes acceso al panel de control.`
-            : `⚠️ *NOTIFICACIÓN DE SISTEMA*\n\nHola ${targetUser.name}.\nTus privilegios de Administrador han sido removidos por el Super Admin.`;
-
-        try {
-            await bot.sendMessage(targetUser.telegramId, notificationMsg, { parse_mode: 'Markdown' });
-        } catch (e) {
-            console.log(`Не удалось отправить уведомление пользователю ${targetUser.telegramId}`);
-        }
-
-    } catch (error) {
-        console.error('Ошибка изменения статуса админа:', error);
-        await bot.sendMessage(adminChatId, "❌ Произошла ошибка при изменении статуса.");
-    }
-}
-
 // Команда /status
 bot.onText(/\/status/, async (msg) => {
     const chatId = msg.chat.id;
@@ -416,7 +526,6 @@ bot.onText(/\/status/, async (msg) => {
     if (user) {
         response += `*Tu usuario:* ${user.name}\n`;
         response += `*ID:* ${user.id?.substring(0, 8)}...\n`;
-        response += `*Admin:* ${user.isAdmin ? '✅ Sí' : '❌ No'}\n`;
 
         if (user.investments && user.investments.length > 0) {
             response += `*Inversiones activas:* ${user.investments.length}\n`;
@@ -429,6 +538,111 @@ bot.onText(/\/status/, async (msg) => {
     }
 
     await bot.sendMessage(chatId, response, { parse_mode: 'Markdown' });
+});
+
+// Команда /admin - только для администраторов
+bot.onText(/\/admin/, async (msg) => {
+    const chatId = msg.chat.id;
+    
+    // Проверяем права доступа
+    const database = await loadDatabase();
+    const admins = database.settings?.admins || ['Admin'];
+    
+    if (chatId.toString() === ADMIN_TELEGRAM_ID || admins.includes(chatId.toString())) {
+        await showAdminPanel(chatId);
+    } else {
+        await bot.sendMessage(chatId, `❌ У вас нет доступа к админ-панели.\n\nЭта функция доступна только администраторам.`);
+    }
+});
+
+// Команда /id - для получения своего ID
+bot.onText(/\/id/, async (msg) => {
+    const chatId = msg.chat.id;
+    await bot.sendMessage(chatId, `🆔 Ваш Telegram ID: \`${chatId}\``, { parse_mode: 'Markdown' });
+});
+
+// Обработка callback-кнопок
+bot.on('callback_query', async (callbackQuery) => {
+    const chatId = callbackQuery.message.chat.id;
+    const data = callbackQuery.data;
+    
+    // Проверяем права доступа для админ-действий
+    if (data.startsWith('admin_')) {
+        const database = await loadDatabase();
+        const admins = database.settings?.admins || ['Admin'];
+        
+        if (chatId.toString() !== ADMIN_TELEGRAM_ID && !admins.includes(chatId.toString())) {
+            await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Нет доступа!' });
+            return;
+        }
+    }
+    
+    try {
+        await bot.answerCallbackQuery(callbackQuery.id);
+        
+        switch (data) {
+            case 'admin_broadcast':
+                await broadcastMessage(chatId);
+                break;
+                
+            case 'admin_add':
+                await addAdmin(chatId);
+                break;
+                
+            case 'admin_remove':
+                await removeAdmin(chatId);
+                break;
+                
+            case 'admin_stats':
+                await showAdminStats(chatId);
+                break;
+                
+            case 'admin_back':
+                await showAdminPanel(chatId);
+                break;
+        }
+        
+    } catch (error) {
+        console.error('❌ Ошибка обработки callback:', error);
+    }
+});
+
+// Обработка текстовых сообщений для админ-панели
+bot.on('message', async (msg) => {
+    const chatId = msg.chat.id;
+    const text = msg.text;
+    
+    if (!text || text.startsWith('/')) return;
+    
+    const state = userStates.get(chatId);
+    
+    if (state) {
+        switch (state.action) {
+            case 'broadcast':
+                await processBroadcast(chatId, text);
+                break;
+                
+            case 'add_admin':
+                // Проверяем что это число
+                if (/^\d+$/.test(text.trim())) {
+                    await processAddAdmin(chatId, text.trim());
+                    userStates.delete(chatId);
+                } else {
+                    await bot.sendMessage(chatId, '❌ Пожалуйста, отправьте только цифры (Telegram ID).');
+                }
+                break;
+                
+            case 'remove_admin':
+                // Проверяем что это число
+                if (/^\d+$/.test(text.trim())) {
+                    await processRemoveAdmin(chatId, text.trim());
+                    userStates.delete(chatId);
+                } else {
+                    await bot.sendMessage(chatId, '❌ Пожалуйста, отправьте только цифры (Telegram ID).');
+                }
+                break;
+        }
+    }
 });
 
 // ==================== АВТОМАТИЧЕСКИЕ ПРОВЕРКИ ====================
@@ -555,6 +769,21 @@ cron.schedule('0 0 * * *', () => {
     console.log(`🧹 Limpiadas ${cleared} entradas de caché`);
 });
 
+// Очистка userStates каждый час
+cron.schedule('0 * * * *', () => {
+    const oneHourAgo = Date.now() - 60 * 60 * 1000;
+    let cleared = 0;
+
+    for (const [key, state] of userStates.entries()) {
+        if (state.timestamp && state.timestamp < oneHourAgo) {
+            userStates.delete(key);
+            cleared++;
+        }
+    }
+
+    console.log(`🧹 Limpiadas ${cleared} состояний пользователей`);
+});
+
 // Manejo de errores
 bot.on('webhook_error', (error) => {
     console.error('❌ Error de webhook:', error.message);
@@ -569,4 +798,3 @@ process.on('SIGINT', () => {
     bot.stopPolling();
     process.exit(0);
 });
-```
