@@ -5,14 +5,14 @@ const express = require('express');
 require('dotenv').config();
 
 // Конфигурация
-const BOT_API_URL = 'https://site-2.0.railway.app/api/investment-created';
-const BOT_WELCOME_API_URL = 'https://site-2.0.railway.app/api/user-registered';
-const BOT_HEALTH_API_URL = 'https://site-2.0.railway.app/api/health';
-const BOT_TOKEN = process.env.BOT_TOKEN
-const JSONBIN_BIN_ID = process.env.JSONBIN_BIN_ID
-const JSONBIN_MASTER_KEY = process.env.JSONBIN_MASTER_KEY
+const BOT_API_URL = process.env.BOT_API_URL || 'https://site-2.0.railway.app/api/investment-created';
+const BOT_WELCOME_API_URL = process.env.BOT_WELCOME_API_URL || 'https://site-2.0.railway.app/api/user-registered';
+const BOT_HEALTH_API_URL = process.env.BOT_HEALTH_API_URL || 'https://site-2.0.railway.app/api/health';
+const BOT_TOKEN = process.env.BOT_TOKEN;
+const JSONBIN_BIN_ID = process.env.JSONBIN_BIN_ID;
+const JSONBIN_MASTER_KEY = process.env.JSONBIN_MASTER_KEY;
 const ADMIN_TELEGRAM_ID = process.env.ADMIN_TELEGRAM_ID || '8382571809';
-const WEBHOOK_URL = process.env.WEBHOOK_URL
+const WEBHOOK_URL = process.env.WEBHOOK_URL;
 const JSONBIN_URL = `https://api.jsonbin.io/v3/b/${JSONBIN_BIN_ID}/latest`;
 
 // Параметры
@@ -24,7 +24,7 @@ const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use((req, res, next) => {
-    res.header('Access-Control-Allow-Origin', 'https://Creecly.pythonanywhere.com');
+    res.header('Access-Control-Allow-Origin', '*'); // Открыто для всех для удобства тестов, в проде ограничьте
     res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
@@ -34,34 +34,13 @@ app.use((req, res, next) => {
     next();
 });
 
-// Инициализация бота
+// Инициализация бота в режиме вебхуков
 const bot = new TelegramBot(BOT_TOKEN);
-
-// ВАЖНО: Исправлена логика установки вебхука
-// Путь для вебхука должен совпадать с путем в Express (ниже в коде)
-const WEBHOOK_PATH = `/bot-webhook/${BOT_TOKEN}`;
-
-if (WEBHOOK_URL) {
-    // Если URL настроен, используем вебхук
-    bot.setWebHook(`${WEBHOOK_URL}${WEBHOOK_PATH}`);
-    console.log(`🔗 Webhook установлен на: ${WEBHOOK_URL}${WEBHOOK_PATH}`);
-} else {
-    // Иначе удаляем старый вебхук и запускаем поллинг
-    bot.deleteWebHook().then(() => {
-        bot.startPolling();
-        console.log('🔄 Запущен режим Polling (Webhook удален)');
-    }).catch(err => {
-        console.log('⚠️ Ошибка удаления вебхука, пробуем polling:', err.message);
-        bot.startPolling();
-    });
-}
+bot.setWebHook(`${WEBHOOK_URL}/${BOT_TOKEN}`);
 
 // Кэш уведомлений
 const sentNotificationsCache = new Map();
 const CACHE_DURATION = 24 * 60 * 60 * 1000;
-
-// Хранилище состояний для админки
-const adminStates = {};
 
 // ==================== ФУНКЦИИ ДЛЯ РАБОТЫ С БД ====================
 
@@ -115,8 +94,9 @@ async function sendNotification(chatId, message) {
     }
 }
 
-// ==================== API ДЛЯ ВАШЕГО САЙТА ====================
+// ==================== API ДЛЯ САЙТА ====================
 
+// 1. Конечная точка для создания инвестиций
 app.post('/api/investment-created', async (req, res) => {
     console.log('📥 Получен запрос от сайта:', req.body);
 
@@ -136,7 +116,7 @@ app.post('/api/investment-created', async (req, res) => {
                        `*Retorno máximo:* +${MAX_PROFIT_PERCENTAGE}%\n` +
                        `*Duración:* 4 horas\n\n` +
                        `¡Tu dinero ya está creciendo! 🚀\n` +
-                       `Recibirás actualizaciones cada 2 horas.`+
+                       `Recibirás actualizaciones cada 2 horas.` +
                        `Support- @Suports_Investment`;
 
         const sent = await sendNotification(telegramId, message);
@@ -164,6 +144,7 @@ app.post('/api/investment-created', async (req, res) => {
     }
 });
 
+// 2. Регистрация нового пользователя
 app.post('/api/user-registered', async (req, res) => {
     try {
         const { telegramId, userName } = req.body;
@@ -174,7 +155,7 @@ app.post('/api/user-registered', async (req, res) => {
                        `• Crear inversiones\n` +
                        `• Seguir el crecimiento en tiempo real\n` +
                        `• Recibir notificaciones automáticas\n\n` +
-                       `¡Comienza tu camino al éxito! 🚀`+
+                       `¡Comienza tu camino al éxito! 🚀` +
                        `Support- @Suports_Investment`;
 
         const sent = await sendNotification(telegramId, message);
@@ -191,24 +172,138 @@ app.post('/api/user-registered', async (req, res) => {
     }
 });
 
+// 3. Статус здоровья API
 app.get('/api/health', (req, res) => {
     res.json({
         status: 'online',
         service: 'Inversiones Bolivia Bot',
         timestamp: new Date().toISOString(),
-        webhook: WEBHOOK_URL ? 'configured' : 'polling',
+        webhook: WEBHOOK_URL ? 'configured' : 'not configured',
         cacheSize: sentNotificationsCache.size
     });
 });
 
+// ==================== НОВЫЕ API ДЛЯ АДМИН-ПАНЕЛИ ====================
+
+// Middleware для проверки супер-админа
+const checkSuperAdmin = (req, res, next) => {
+    const adminId = req.body.adminId || req.query.adminId;
+    if (adminId !== ADMIN_TELEGRAM_ID) {
+        return res.status(403).json({ success: false, error: 'Acceso denegado' });
+    }
+    next();
+};
+
+// Массовая рассылка
+app.post('/api/admin/broadcast', checkSuperAdmin, async (req, res) => {
+    try {
+        const { message } = req.body;
+        if (!message) return res.status(400).json({ success: false, error: 'Mensaje vacío' });
+
+        const database = await loadDatabase();
+        const users = Object.values(database.users);
+        let successCount = 0;
+        let failCount = 0;
+
+        for (const user of users) {
+            if (user.telegramId) {
+                try {
+                    await bot.sendMessage(user.telegramId, message, { parse_mode: 'Markdown' });
+                    successCount++;
+                    // Небольшая задержка, чтобы не забанить за спам
+                    await new Promise(resolve => setTimeout(resolve, 50));
+                } catch (e) {
+                    console.error(`Error sending to ${user.telegramId}:`, e.message);
+                    failCount++;
+                }
+            }
+        }
+
+        res.json({
+            success: true,
+            message: `Рассылка завершена. Успешно: ${successCount}, Ошибок: ${failCount}`
+        });
+
+    } catch (error) {
+        console.error('❌ Error en broadcast:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Назначение/Снятие админа
+app.post('/api/admin/toggle-admin', checkSuperAdmin, async (req, res) => {
+    try {
+        const { targetTelegramId, action } = req.body; // action: 'assign' or 'remove'
+
+        if (!targetTelegramId || !action) {
+            return res.status(400).json({ success: false, error: 'Faltan datos' });
+        }
+
+        const database = await loadDatabase();
+        let targetUser = null;
+
+        // Ищем пользователя по telegramId
+        for (const key in database.users) {
+            if (database.users[key].telegramId == targetTelegramId) {
+                targetUser = database.users[key];
+                break;
+            }
+        }
+
+        if (!targetUser) {
+            return res.status(404).json({ success: false, error: 'Usuario no encontrado' });
+        }
+
+        targetUser.isAdmin = (action === 'assign');
+        await saveDatabase(database);
+
+        // Отправляем уведомление пользователю
+        let notifyMsg = '';
+        if (action === 'assign') {
+            notifyMsg = `👑 *¡FELICIDADES!*\n\n` +
+                        `Has sido promovido a **ADMINISTRADOR** de Inversiones Bolivia.\n` +
+                        `Ahora tienes acceso a funciones especiales en el panel.`;
+        } else {
+            notifyMsg = `⚠️ *AVISO IMPORTANTE*\n\n` +
+                        `Tus privilegios de **ADMINISTRADOR** han sido revocados.`;
+        }
+
+        await bot.sendMessage(targetTelegramId, notifyMsg, { parse_mode: 'Markdown' });
+
+        res.json({
+            success: true,
+            message: `Estatus de admin actualizado para ${targetUser.name}`,
+            user: targetUser.name
+        });
+
+    } catch (error) {
+        console.error('❌ Error en toggle-admin:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Управление ботом (Очистка кэша)
+app.post('/api/admin/bot-control', checkSuperAdmin, async (req, res) => {
+    try {
+        const { action } = req.body; // 'clear-cache'
+
+        if (action === 'clear-cache') {
+            sentNotificationsCache.clear();
+            console.log('🧹 Cache cleared by admin');
+            return res.json({ success: true, message: 'Кэш уведомлений очищен' });
+        }
+
+        res.status(400).json({ success: false, error: 'Unknown action' });
+
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
 // ==================== ВЕБХУК TELEGRAM ====================
 
-// Маршрут должен СОВПАДАТЬ с тем, что мы передали в bot.setWebHook
-app.post(WEBHOOK_PATH, (req, res) => {
+app.post(`/bot-webhook/${BOT_TOKEN}`, (req, res) => {
     const update = req.body;
-    // console.log('📱 Update received:', JSON.stringify(update, null, 2)); // Раскомментируйте для отладки
-
-    // Обработка обновлений
     bot.processUpdate(update);
     res.sendStatus(200);
 });
@@ -218,184 +313,31 @@ app.post(WEBHOOK_PATH, (req, res) => {
 bot.onText(/\/start/, async (msg) => {
     const chatId = msg.chat.id;
     const firstName = msg.from.first_name || 'Usuario';
-
     const response = `🤖 *BOT DE INVERSIONES BOLIVIA*\n\n` +
                     `Hola ${firstName}, soy el sistema de notificaciones.\n\n` +
                     `*Recibirás automáticamente:*\n` +
                     `• 🎉 Confirmación de inversiones\n` +
                     `• 📈 Actualizaciones cada 2 horas\n` +
                     `• 🏆 Notificación de finalización\n\n` +
-                    `Para crear inversiones, visita nuestra web.`+
+                    `Para crear inversiones, visita nuestra web.` +
                     `Support- @Suports_Investment`;
-
     await bot.sendMessage(chatId, response, { parse_mode: 'Markdown' });
 });
 
 bot.onText(/\/help/, async (msg) => {
     const chatId = msg.chat.id;
-
     const response = `📋 *AYUDA*\n\n` +
                     `Este bot envía notificaciones automáticas sobre tus inversiones.\n\n` +
                     `*Comandos disponibles:*\n` +
                     `/start - Mensaje de bienvenida\n` +
                     `/status - Ver estado de notificaciones\n` +
-                    `/admin - Panel de administración (Solo admins)\n` +
                     `/help - Esta ayuda\n\n` +
                     `Las inversiones se crean desde la web oficial.`;
-
     await bot.sendMessage(chatId, response, { parse_mode: 'Markdown' });
 });
 
-// ==================== АДМИН ПАНЕЛЬ ====================
-
-bot.onText(/\/admin/, async (msg) => {
-    const chatId = msg.chat.id.toString();
-
-    console.log(`🛠 Попытка доступа к админке от ID: ${chatId}. Ожидается: ${ADMIN_TELEGRAM_ID}`);
-
-    // Проверка на администратора
-    if (chatId !== ADMIN_TELEGRAM_ID) {
-        return bot.sendMessage(chatId, "🚫 *Acceso Denegado*\n\nNo tienes permisos para usar este comando.", { parse_mode: 'Markdown' });
-    }
-
-    const keyboard = {
-        inline_keyboard: [
-            [
-                { text: '📢 Массовая рассылка', callback_data: 'action_broadcast' }
-            ],
-            [
-                { text: '👑 Назначить админа', callback_data: 'action_assign_admin' },
-                { text: '⛔ Снять админа', callback_data: 'action_remove_admin' }
-            ]
-        ]
-    };
-
-    await bot.sendMessage(chatId, "🛠 *Panel de Administrador*\n\nSelecciona una acción:", {
-        reply_markup: keyboard,
-        parse_mode: 'Markdown'
-    });
-});
-
-bot.on('callback_query', async (query) => {
-    const chatId = query.from.id.toString();
-    const data = query.data;
-
-    if (chatId !== ADMIN_TELEGRAM_ID) {
-        return bot.answerCallbackQuery(query.id, { text: "Acceso denegado", show_alert: true });
-    }
-
-    bot.answerCallbackQuery(query.id);
-
-    if (data === 'action_broadcast') {
-        adminStates[chatId] = 'BROADCAST';
-        await bot.sendMessage(chatId, "📢 *Рассылка*\n\nВведите текст сообщения, которое вы хотите отправить всем пользователям:", { parse_mode: 'Markdown' });
-    }
-    else if (data === 'action_assign_admin') {
-        adminStates[chatId] = 'ASSIGN_ADMIN';
-        await bot.sendMessage(chatId, "👑 *Назначение админа*\n\nВведите Telegram ID пользователя, которого хотите назначить администратором:", { parse_mode: 'Markdown' });
-    }
-    else if (data === 'action_remove_admin') {
-        adminStates[chatId] = 'REMOVE_ADMIN';
-        await bot.sendMessage(chatId, "⛔ *Снятие админа*\n\nВведите Telegram ID пользователя, у которого хотите снять права администратора:", { parse_mode: 'Markdown' });
-    }
-});
-
-bot.on('message', async (msg) => {
-    const chatId = msg.from.id.toString();
-    const text = msg.text;
-
-    // Если это команда, пропускаем обработку стейтов
-    if (text.startsWith('/')) return;
-
-    const currentState = adminStates[chatId];
-
-    if (currentState === 'BROADCAST') {
-        await handleBroadcast(chatId, text);
-        delete adminStates[chatId];
-    }
-    else if (currentState === 'ASSIGN_ADMIN') {
-        const targetId = text.trim();
-        await handleAdminAction(chatId, targetId, true);
-        delete adminStates[chatId];
-    }
-    else if (currentState === 'REMOVE_ADMIN') {
-        const targetId = text.trim();
-        await handleAdminAction(chatId, targetId, false);
-        delete adminStates[chatId];
-    }
-});
-
-async function handleBroadcast(adminChatId, messageText) {
-    try {
-        const db = await loadDatabase();
-        const users = Object.values(db.users);
-        let successCount = 0;
-        let failCount = 0;
-
-        await bot.sendMessage(adminChatId, `⏳ Начинаю рассылку для ${users.length} пользователей...`);
-
-        for (const user of users) {
-            if (user.telegramId) {
-                try {
-                    const msg = `⚠️ *COMUNICADO OFICIAL*\n\n${messageText}\n\n_Support- @Suports_Investment_`;
-                    await bot.sendMessage(user.telegramId, msg, { parse_mode: 'Markdown' });
-                    successCount++;
-                    await new Promise(r => setTimeout(r, 50));
-                } catch (e) {
-                    console.log(`Ошибка отправки пользователю ${user.telegramId}: ${e.message}`);
-                    failCount++;
-                }
-            }
-        }
-
-        await bot.sendMessage(adminChatId, `✅ *Рассылка завершена*\n\nУспешно: ${successCount}\nНе доставлено: ${failCount}`, { parse_mode: 'Markdown' });
-
-    } catch (error) {
-        console.error('Ошибка при рассылке:', error);
-        await bot.sendMessage(adminChatId, "❌ Произошла ошибка при отправке рассылки.");
-    }
-}
-
-async function handleAdminAction(adminChatId, targetTelegramId, makeAdmin) {
-    try {
-        const db = await loadDatabase();
-
-        const targetUser = Object.values(db.users).find(u => String(u.telegramId) === String(targetTelegramId));
-
-        if (!targetUser) {
-            return bot.sendMessage(adminChatId, `❌ Пользователь с ID ${targetTelegramId} не найден в базе данных.`);
-        }
-
-        if (targetUser.isAdmin === makeAdmin) {
-            return bot.sendMessage(adminChatId, `⚠️ Пользователь ${targetUser.name} уже ${makeAdmin ? 'является' : 'не является'} администратором.`);
-        }
-
-        targetUser.isAdmin = makeAdmin;
-        await saveDatabase(db);
-
-        const actionName = makeAdmin ? "назначен" : "снят";
-
-        await bot.sendMessage(adminChatId, `✅ *Готово*\n\nПользователь: ${targetUser.name} (ID: ${targetUser.telegramId})\nСтатус: ${makeAdmin ? 'Администратор' : 'Пользователь'}`, { parse_mode: 'Markdown' });
-
-        const notificationMsg = makeAdmin
-            ? `👑 *¡FELICIDADES, ${targetUser.name}!*\n\nHas sido promovido al rango de *ADMINISTRADOR*.\nAhora tienes acceso al panel de control.`
-            : `⚠️ *NOTIFICACIÓN DE SISTEMA*\n\nHola ${targetUser.name}.\nTus privilegios de Administrador han sido removidos por el Super Admin.`;
-
-        try {
-            await bot.sendMessage(targetUser.telegramId, notificationMsg, { parse_mode: 'Markdown' });
-        } catch (e) {
-            console.log(`Не удалось отправить уведомление пользователю ${targetUser.telegramId}`);
-        }
-
-    } catch (error) {
-        console.error('Ошибка изменения статуса админа:', error);
-        await bot.sendMessage(adminChatId, "❌ Произошла ошибка при изменении статуса.");
-    }
-}
-
 bot.onText(/\/status/, async (msg) => {
     const chatId = msg.chat.id;
-
     const db = await loadDatabase();
     const user = Object.values(db.users).find(u => u.telegramId == chatId);
 
@@ -406,17 +348,9 @@ bot.onText(/\/status/, async (msg) => {
 
     if (user) {
         response += `*Tu usuario:* ${user.name}\n`;
-        response += `*ID:* ${user.id?.substring(0, 8)}...\n`;
-        response += `*Admin:* ${user.isAdmin ? '✅ Sí' : '❌ No'}\n`;
-
-        if (user.investments && user.investments.length > 0) {
-            response += `*Inversiones activas:* ${user.investments.length}\n`;
-        } else {
-            response += `*No tienes inversiones activas.*\n`;
-        }
+        response += `*Admin:* ${user.isAdmin ? 'Sí 👑' : 'No'}\n`;
     } else {
         response += `*No estás registrado en el sistema.*\n`;
-        response += `Visita la web para crear tu cuenta.`;
     }
 
     await bot.sendMessage(chatId, response, { parse_mode: 'Markdown' });
@@ -458,9 +392,8 @@ async function checkInvestmentProgress() {
                                    `Han pasado 2 horas de tu inversión.\n` +
                                    `*Crecimiento actual:* +${profit.toFixed(1)}%\n` +
                                    `*Ganancia:* Bs. ${(investment.amount * profit / 100).toFixed(2)}\n\n` +
-                                   `¡Sigue creciendo! 💰`+
+                                   `¡Sigue creciendo! 💰` +
                                    `Support- @Suports_Investment`;
-
                     await sendNotification(user.telegramId, message);
                     investment.notifications.twoHours = true;
                     notificationsSent++;
@@ -469,12 +402,11 @@ async function checkInvestmentProgress() {
                 if (!investment.notifications.completed && isCompleted) {
                     const finalProfit = investment.amount * MAX_PROFIT_PERCENTAGE / 100;
                     const total = investment.amount + finalProfit;
-
                     const message = `🏆 *¡INVERSIÓN COMPLETADA!*\n\n` +
                                    `*Inversión:* Bs. ${investment.amount.toFixed(2)}\n` +
                                    `*Ganancia:* +${MAX_PROFIT_PERCENTAGE}%\n` +
                                    `*Total:* Bs. ${total.toFixed(2)}\n\n` +
-                                   `⚠️ *¡CONTACTA AL ADMINISTRADOR PARA RETIRAR!*`+
+                                   `⚠️ *¡CONTACTA AL ADMINISTRADOR PARA RETIRAR!*` +
                                    `Support- @Suports_Investment`;
                     await sendNotification(user.telegramId, message);
                     investment.notifications.completed = true;
@@ -511,12 +443,13 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`🚀 Servidor iniciado en puerto ${PORT}`);
     console.log(`🤖 Bot: ${bot.options.username}`);
-    console.log(`👑 Admin ID: ${ADMIN_TELEGRAM_ID}`);
+    console.log(`🌐 Webhook: ${WEBHOOK_URL || 'No configurado'}`);
+    console.log(`📞 API Health: http://localhost:${PORT}/api/health`);
+    console.log(`👑 Admin: ${ADMIN_TELEGRAM_ID}`);
 
-    if (WEBHOOK_URL) {
-        console.log(`🔗 Webhook URL: ${WEBHOOK_URL}${WEBHOOK_PATH}`);
-    } else {
-        console.log(`🔄 Webhook не настроен. Используется Polling.`);
+    if (!WEBHOOK_URL) {
+        console.warn('⚠️  WEBHOOK_URL no configurado. Usando polling como respaldo.');
+        bot.startPolling();
     }
 });
 
@@ -532,17 +465,11 @@ cron.schedule('0 0 * * *', () => {
             cleared++;
         }
     }
-
     console.log(`🧹 Limpiadas ${cleared} entradas de caché`);
 });
 
-bot.on('webhook_error', (error) => {
-    console.error('❌ Error de webhook:', error.message);
-});
-
-bot.on('polling_error', (error) => {
-    console.error('❌ Error de polling:', error.message);
-});
+bot.on('webhook_error', (error) => console.error('❌ Error de webhook:', error.message));
+bot.on('polling_error', (error) => console.error('❌ Error de polling:', error.message));
 
 process.on('SIGINT', () => {
     console.log('👋 Apagando...');
