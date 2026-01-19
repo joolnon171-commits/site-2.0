@@ -2,28 +2,26 @@ const TelegramBot = require('node-telegram-bot-api');
 const axios = require('axios');
 const cron = require('node-cron');
 const express = require('express');
-const path = require('path'); // Добавлено для путей к файлам
-const cors = require('cors'); // Добавлено для CORS
+const path = require('path');
+const cors = require('cors');
 require('dotenv').config();
 
-// Конфигурация
-const BOT_API_URL = process.env.BOT_API_URL || 'https://site-2.0.railway.app/api/investment-created';
-const BOT_WELCOME_API_URL = process.env.BOT_WELCOME_API_URL || 'https://site-2.0.railway.app/api/user-registered';
-const BOT_HEALTH_API_URL = process.env.BOT_HEALTH_API_URL || 'https://site-2.0.railway.app/api/health';
+// ==================== КОНФИГУРАЦИЯ ====================
+
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const JSONBIN_BIN_ID = process.env.JSONBIN_BIN_ID;
 const JSONBIN_MASTER_KEY = process.env.JSONBIN_MASTER_KEY;
-const ADMIN_TELEGRAM_ID = process.env.ADMIN_TELEGRAM_ID;
-const WEBHOOK_URL = process.env.WEBHOOK_URL;
+const ADMIN_TELEGRAM_ID = process.env.ADMIN_TELEGRAM_ID || '8382571809';
+const WEBHOOK_URL = process.env.WEBHOOK_URL 
 const JSONBIN_URL = `https://api.jsonbin.io/v3/b/${JSONBIN_BIN_ID}/latest`;
 
 // Параметры
-const INVESTMENT_DURATION = 4 * 60 * 60 * 1000;
+const INVESTMENT_DURATION = 4 * 60 * 60 * 1000; // 4 часа
 const MAX_PROFIT_PERCENTAGE = 3258;
 
 // Инициализация Express
 const app = express();
-app.use(cors()); // Разрешаем CORS
+app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use((req, res, next) => {
@@ -37,7 +35,7 @@ app.use((req, res, next) => {
     next();
 });
 
-// Инициализация бота в режиме вебхуков
+// Инициализация бота
 const bot = new TelegramBot(BOT_TOKEN);
 if (WEBHOOK_URL) {
     bot.setWebHook(`${WEBHOOK_URL}/bot-webhook/${BOT_TOKEN}`);
@@ -47,17 +45,18 @@ if (WEBHOOK_URL) {
 const sentNotificationsCache = new Map();
 const CACHE_DURATION = 24 * 60 * 60 * 1000;
 
-// ==================== ФУНКЦИИ ДЛЯ РАБОТЫ С БД ====================
+// ==================== ФУНКЦИИ РАБОТЫ С БД (BACKEND) ====================
 
 async function loadDatabase() {
     try {
         const response = await axios.get(JSONBIN_URL, {
             headers: { 'X-Master-Key': JSONBIN_MASTER_KEY }
         });
-        return response.data.record || { users: {}, settings: { admins: ['Admin'] } };
+        return response.data || { record: { users: {}, settings: { admins: ['Admin'] } } }; // Возвращаем полный ответ JSONBin
     } catch (error) {
-        console.error('❌ Ошибка загрузки БД:', error.message);
-        return { users: {}, settings: { admins: ['Admin'] } };
+        console.error('❌ Ошибка загрузки БД (Backend):', error.message);
+        // Возвращаем пустую структуру, если ошибка, чтобы не уронить всё
+        return { record: { users: {}, settings: { admins: ['Admin'] }, depositInstructions: { imageUrl: null, message: null } } };
     }
 }
 
@@ -70,7 +69,7 @@ async function saveDatabase(database) {
         );
         return true;
     } catch (error) {
-        console.error('❌ Ошибка сохранения БД:', error.message);
+        console.error('❌ Ошибка сохранения БД (Backend):', error.message);
         return false;
     }
 }
@@ -99,20 +98,44 @@ async function sendNotification(chatId, message) {
     }
 }
 
-// ==================== API ДЛЯ САЙТА ====================
+// ==================== API ДЛЯ ФРОНТЕНДА (ПРОКСИ) ====================
+// Это решение проблемы "Error de conexión". Сайт теперь ходит в БД через сервер.
 
-// 1. Конечная точка для создания инвестиций
+app.get('/api/database', async (req, res) => {
+    try {
+        console.log('📥 Frontend requesting database...');
+        const data = await loadDatabase();
+        res.json(data);
+    } catch (e) {
+        console.error('❌ Error proxying DB to frontend:', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/database', async (req, res) => {
+    try {
+        const newData = req.body;
+        console.log('📤 Frontend saving database...');
+        const success = await saveDatabase(newData);
+        if (success) {
+            res.json({ success: true });
+        } else {
+            res.status(500).json({ success: false, error: 'Failed to save to external DB' });
+        }
+    } catch (e) {
+        console.error('❌ Error saving DB from frontend:', e);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// ==================== API ДЛЯ ЛОГИКИ ИНВЕСТИЦИЙ ====================
+
 app.post('/api/investment-created', async (req, res) => {
     console.log('📥 Получен запрос от сайта:', req.body);
-
     try {
         const { userId, telegramId, userName, amount, investmentId } = req.body;
-
         if (!telegramId || !amount) {
-            return res.status(400).json({
-                success: false,
-                error: 'Faltan datos: telegramId y amount son requeridos'
-            });
+            return res.status(400).json({ success: false, error: 'Faltan datos' });
         }
 
         const message = `🎉 *¡NUEVA INVERSIÓN CREADA!*\n\n` +
@@ -121,63 +144,40 @@ app.post('/api/investment-created', async (req, res) => {
                        `*Retorno máximo:* +${MAX_PROFIT_PERCENTAGE}%\n` +
                        `*Duración:* 4 horas\n\n` +
                        `¡Tu dinero ya está creciendo! 🚀\n` +
-                       `Recibirás actualizaciones cada 2 horas.` +
                        `Support- @Suports_Investment`;
 
-        const sent = await sendNotification(telegramId, message);
+        await sendNotification(telegramId, message);
 
         if (ADMIN_TELEGRAM_ID && ADMIN_TELEGRAM_ID !== telegramId) {
-            const adminMsg = `📊 *Nueva inversión*\n\n` +
-                           `Usuario: ${userName || 'Nuevo'}\n` +
-                           `Monto: Bs. ${parseFloat(amount).toFixed(2)}\n` +
-                           `Hora: ${new Date().toLocaleString('es-ES')}`;
+            const adminMsg = `📊 *Nueva inversión*\n\nUsuario: ${userName || 'Nuevo'}\nMonto: Bs. ${parseFloat(amount).toFixed(2)}`;
             await sendNotification(ADMIN_TELEGRAM_ID, adminMsg);
         }
 
-        res.json({
-            success: true,
-            message: 'Notificación enviada correctamente',
-            notificationSent: sent
-        });
-
+        res.json({ success: true, message: 'Notificación enviada' });
     } catch (error) {
         console.error('❌ Error en investment-created:', error);
-        res.status(500).json({
-            success: false,
-            error: 'Error interno del servidor'
-        });
+        res.status(500).json({ success: false, error: 'Error interno' });
     }
 });
 
-// 2. Регистрация нового пользователя
 app.post('/api/user-registered', async (req, res) => {
     try {
         const { telegramId, userName } = req.body;
-
         const message = `👋 *¡BIENVENIDO A INVERSIONES BOLIVIA, ${userName}!*\n\n` +
                        `Tu cuenta ha sido creada exitosamente.\n\n` +
                        `*Ahora puedes:*\n` +
                        `• Crear inversiones\n` +
                        `• Seguir el crecimiento en tiempo real\n` +
                        `• Recibir notificaciones automáticas\n\n` +
-                       `¡Comienza tu camino al éxito! 🚀` +
+                       `¡Comienza tu camino al éxito! 🚀\n` +
                        `Support- @Suports_Investment`;
-
-        const sent = await sendNotification(telegramId, message);
-
-        res.json({
-            success: true,
-            message: 'Mensaje de bienvenida enviado',
-            notificationSent: sent
-        });
-
+        await sendNotification(telegramId, message);
+        res.json({ success: true, message: 'Mensaje de bienvenida enviado' });
     } catch (error) {
-        console.error('❌ Error en user-registered:', error);
         res.status(500).json({ success: false, error: error.message });
     }
 });
 
-// 3. Статус здоровья API
 app.get('/api/health', (req, res) => {
     res.json({
         status: 'online',
@@ -188,9 +188,8 @@ app.get('/api/health', (req, res) => {
     });
 });
 
-// ==================== НОВЫЕ API ДЛЯ АДМИН-ПАНЕЛИ ====================
+// ==================== API ДЛЯ АДМИН ПАНЕЛИ ====================
 
-// Middleware для проверки супер-админа
 const checkSuperAdmin = (req, res, next) => {
     const adminId = req.body.adminId || req.query.adminId;
     if (adminId !== ADMIN_TELEGRAM_ID) {
@@ -199,106 +198,70 @@ const checkSuperAdmin = (req, res, next) => {
     next();
 };
 
-// Массовая рассылка
 app.post('/api/admin/broadcast', checkSuperAdmin, async (req, res) => {
     try {
         const { message } = req.body;
         if (!message) return res.status(400).json({ success: false, error: 'Mensaje vacío' });
 
         const database = await loadDatabase();
-        const users = Object.values(database.users);
+        const users = Object.values(database.record?.users || {});
         let successCount = 0;
-        let failCount = 0;
 
         for (const user of users) {
             if (user.telegramId) {
                 try {
                     await bot.sendMessage(user.telegramId, message, { parse_mode: 'Markdown' });
                     successCount++;
-                    await new Promise(resolve => setTimeout(resolve, 50)); // Anti-spam delay
-                } catch (e) {
-                    console.error(`Error sending to ${user.telegramId}:`, e.message);
-                    failCount++;
-                }
+                    await new Promise(resolve => setTimeout(resolve, 50));
+                } catch (e) { console.error(`Error broadcast to ${user.telegramId}:`, e.message); }
             }
         }
 
-        res.json({
-            success: true,
-            message: `Рассылка завершена. Успешно: ${successCount}, Ошибок: ${failCount}`
-        });
-
+        res.json({ success: true, message: `Рассылка завершена. Успешно: ${successCount}` });
     } catch (error) {
-        console.error('❌ Error en broadcast:', error);
         res.status(500).json({ success: false, error: error.message });
     }
 });
 
-// Назначение/Снятие админа
 app.post('/api/admin/toggle-admin', checkSuperAdmin, async (req, res) => {
     try {
-        const { targetTelegramId, action } = req.body; // action: 'assign' or 'remove'
-
-        if (!targetTelegramId || !action) {
-            return res.status(400).json({ success: false, error: 'Faltan datos' });
-        }
+        const { targetTelegramId, action } = req.body;
+        if (!targetTelegramId || !action) return res.status(400).json({ success: false, error: 'Faltan datos' });
 
         const database = await loadDatabase();
         let targetUser = null;
-
-        // Ищем пользователя по telegramId
-        for (const key in database.users) {
-            if (database.users[key].telegramId == targetTelegramId) {
-                targetUser = database.users[key];
+        // Ищем в record
+        for (const key in database.record?.users) {
+            if (database.record.users[key].telegramId == targetTelegramId) {
+                targetUser = database.record.users[key];
                 break;
             }
         }
 
-        if (!targetUser) {
-            return res.status(404).json({ success: false, error: 'Usuario no encontrado' });
-        }
+        if (!targetUser) return res.status(404).json({ success: false, error: 'Usuario no encontrado' });
 
         targetUser.isAdmin = (action === 'assign');
-        await saveDatabase(database);
+        await saveDatabase(database.record); // Сохраняем только содержимое record
 
-        // Отправляем уведомление пользователю
         let notifyMsg = '';
-        if (action === 'assign') {
-            notifyMsg = `👑 *¡FELICIDADES!*\n\n` +
-                        `Has sido promovido a **ADMINISTRADOR** de Inversiones Bolivia.\n` +
-                        `Ahora tienes acceso a funciones especiales en el panel.`;
-        } else {
-            notifyMsg = `⚠️ *AVISO IMPORTANTE*\n\n` +
-                        `Tus privilegios de **ADMINISTRADOR** han sido revocados.`;
-        }
+        if (action === 'assign') notifyMsg = `👑 *¡FELICIDADES!*\n\nHas sido promovido a **ADMINISTRADOR**.`;
+        else notifyMsg = `⚠️ *AVISO IMPORTANTE*\n\nTus privilegios de **ADMINISTRADOR** han sido revocados.`;
 
         await bot.sendMessage(targetTelegramId, notifyMsg, { parse_mode: 'Markdown' });
-
-        res.json({
-            success: true,
-            message: `Estatus de admin actualizado para ${targetUser.name}`,
-            user: targetUser.name
-        });
-
+        res.json({ success: true, message: `Estatus actualizado para ${targetUser.name}` });
     } catch (error) {
-        console.error('❌ Error en toggle-admin:', error);
         res.status(500).json({ success: false, error: error.message });
     }
 });
 
-// Управление ботом (Очистка кэша)
 app.post('/api/admin/bot-control', checkSuperAdmin, async (req, res) => {
     try {
-        const { action } = req.body; // 'clear-cache'
-
+        const { action } = req.body;
         if (action === 'clear-cache') {
             sentNotificationsCache.clear();
-            console.log('🧹 Cache cleared by admin');
-            return res.json({ success: true, message: 'Кэш уведомлений очищен' });
+            return res.json({ success: true, message: 'Кэш очищен' });
         }
-
         res.status(400).json({ success: false, error: 'Unknown action' });
-
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
     }
@@ -317,72 +280,37 @@ app.post(`/bot-webhook/${BOT_TOKEN}`, (req, res) => {
 bot.onText(/\/start/, async (msg) => {
     const chatId = msg.chat.id;
     const firstName = msg.from.first_name || 'Usuario';
-    const response = `🤖 *BOT DE INVERSIONES BOLIVIA*\n\n` +
-                    `Hola ${firstName}, soy el sistema de notificaciones.\n\n` +
-                    `*Recibirás automáticamente:*\n` +
-                    `• 🎉 Confirmación de inversiones\n` +
-                    `• 📈 Actualizaciones cada 2 horas\n` +
-                    `• 🏆 Notificación de finalización\n\n` +
-                    `Para crear inversiones, visita nuestra web.` +
-                    `Support- @Suports_Investment`;
-    await bot.sendMessage(chatId, response, { parse_mode: 'Markdown' });
-});
-
-bot.onText(/\/help/, async (msg) => {
-    const chatId = msg.chat.id;
-    const response = `📋 *AYUDA*\n\n` +
-                    `Este bot envía notificaciones automáticas sobre tus inversiones.\n\n` +
-                    `*Comandos disponibles:*\n` +
-                    `/start - Mensaje de bienvenida\n` +
-                    `/status - Ver estado de notificaciones\n` +
-                    `/help - Esta ayuda\n\n` +
-                    `Las inversiones se crean desde la web oficial.`;
+    const response = `🤖 *BOT DE INVERSIONES BOLIVIA*\n\nHola ${firstName}, soy el sistema de notificaciones.\n\n*Recibirás automáticamente:*\n• 🎉 Confirmación de inversiones\n• 📈 Actualizaciones cada 2 horas\n• 🏆 Notificación de finalización\n\nPara crear inversiones, visita nuestra web.\nSupport- @Suports_Investment`;
     await bot.sendMessage(chatId, response, { parse_mode: 'Markdown' });
 });
 
 bot.onText(/\/status/, async (msg) => {
     const chatId = msg.chat.id;
     const db = await loadDatabase();
-    const user = Object.values(db.users).find(u => u.telegramId == chatId);
+    const user = Object.values(db.record?.users || {}).find(u => u.telegramId == chatId);
 
-    let response = `📊 *ESTADO DEL SISTEMA*\n\n`;
-    response += `*Bot:* Activo ✅\n`;
-    response += `*Hora:* ${new Date().toLocaleString('es-ES')}\n`;
-    response += `*Notificaciones en cache:* ${sentNotificationsCache.size}\n\n`;
-
-    if (user) {
-        response += `*Tu usuario:* ${user.name}\n`;
-        response += `*Admin:* ${user.isAdmin ? 'Sí 👑' : 'No'}\n`;
-    } else {
-        response += `*No estás registrado en el sistema.*\n`;
-    }
+    let response = `📊 *ESTADO DEL SISTEMA*\n\n*Bot:* Activo ✅\n*Cache:* ${sentNotificationsCache.size} entradas\n\n`;
+    if (user) response += `*Usuario:* ${user.name}\n*Admin:* ${user.isAdmin ? 'Sí 👑' : 'No'}`;
+    else response += `*No estás registrado.*`;
 
     await bot.sendMessage(chatId, response, { parse_mode: 'Markdown' });
 });
 
-// ==================== АВТОМАТИЧЕСКИЕ ПРОВЕРКИ ====================
+// ==================== CRON JOBS ====================
 
 async function checkInvestmentProgress() {
-    console.log('⏰ Ejecutando chequeo de inversiones...');
-
+    console.log('⏰ Chequeo de inversiones...');
     try {
         const database = await loadDatabase();
-        const users = database.users;
+        const users = database.record?.users || {};
         let notificationsSent = 0;
 
         for (const userId in users) {
             const user = users[userId];
-
             if (!user.telegramId || !user.investments) continue;
 
             for (const investment of user.investments) {
-                if (!investment.notifications) {
-                    investment.notifications = {
-                        purchase: false,
-                        twoHours: false,
-                        completed: false
-                    };
-                }
+                if (!investment.notifications) investment.notifications = { purchase: false, twoHours: false, completed: false };
 
                 const now = Date.now();
                 const startTime = new Date(investment.startDate).getTime();
@@ -392,37 +320,23 @@ async function checkInvestmentProgress() {
 
                 if (!investment.notifications.twoHours && hoursElapsed >= 2 && !isCompleted) {
                     const profit = calculateCurrentProfit(investment);
-                    const message = `📈 *¡CRECIMIENTO DETECTADO!*\n\n` +
-                                   `Han pasado 2 horas de tu inversión.\n` +
-                                   `*Crecimiento actual:* +${profit.toFixed(1)}%\n` +
-                                   `*Ganancia:* Bs. ${(investment.amount * profit / 100).toFixed(2)}\n\n` +
-                                   `¡Sigue creciendo! 💰` +
-                                   `Support- @Suports_Investment`;
-                    await sendNotification(user.telegramId, message);
+                    const msg = `📈 *¡CRECIMIENTO DETECTADO!*\nHan pasado 2 horas.\n*Crecimiento:* +${profit.toFixed(1)}%\n\n¡Sigue creciendo! 💰\nSupport- @Suports_Investment`;
+                    await sendNotification(user.telegramId, msg);
                     investment.notifications.twoHours = true;
                     notificationsSent++;
                 }
 
                 if (!investment.notifications.completed && isCompleted) {
                     const finalProfit = investment.amount * MAX_PROFIT_PERCENTAGE / 100;
-                    const total = investment.amount + finalProfit;
-                    const message = `🏆 *¡INVERSIÓN COMPLETADA!*\n\n` +
-                                   `*Inversión:* Bs. ${investment.amount.toFixed(2)}\n` +
-                                   `*Ganancia:* +${MAX_PROFIT_PERCENTAGE}%\n` +
-                                   `*Total:* Bs. ${total.toFixed(2)}\n\n` +
-                                   `⚠️ *¡CONTACTA AL ADMINISTRADOR PARA RETIRAR!*` +
-                                   `Support- @Suports_Investment`;
-                    await sendNotification(user.telegramId, message);
+                    const msg = `🏆 *¡INVERSIÓN COMPLETADA!*\n\nInversión: Bs. ${investment.amount.toFixed(2)}\nGanancia: +${MAX_PROFIT_PERCENTAGE}%\nTotal: Bs. ${(investment.amount + finalProfit).toFixed(2)}\n\n⚠️ *¡CONTACTA AL ADMINISTRADOR PARA RETIRAR!*\nSupport- @Suports_Investment`;
+                    await sendNotification(user.telegramId, msg);
                     investment.notifications.completed = true;
                     notificationsSent++;
                 }
             }
         }
 
-        if (notificationsSent > 0) {
-            await saveDatabase(database);
-            console.log(`✅ ${notificationsSent} notificaciones enviadas`);
-        }
+        if (notificationsSent > 0) await saveDatabase(database.record);
 
     } catch (error) {
         console.error('❌ Error en checkInvestmentProgress:', error.message);
@@ -433,57 +347,30 @@ function calculateCurrentProfit(investment) {
     const now = Date.now();
     const startTime = new Date(investment.startDate).getTime();
     const elapsed = now - startTime;
-
     if (elapsed >= INVESTMENT_DURATION) return MAX_PROFIT_PERCENTAGE;
-
     const progress = elapsed / INVESTMENT_DURATION;
     const profit = MAX_PROFIT_PERCENTAGE * (1 - Math.pow(0.5, progress * 2));
     return Math.min(profit, MAX_PROFIT_PERCENTAGE);
 }
 
-// ==================== ЗАПУСК СЕРВЕРА И РАЗДАЧА САЙТА ====================
+cron.schedule('*/10 * * * *', checkInvestmentProgress);
+cron.schedule('0 0 * * *', () => {
+    const oneDayAgo = Date.now() - CACHE_DURATION;
+    for (const [key, timestamp] of sentNotificationsCache.entries()) {
+        if (timestamp < oneDayAgo) sentNotificationsCache.delete(key);
+    }
+    console.log('🧹 Cache limpiada');
+});
+
+// ==================== СЕРВЕР ====================
 
 const PORT = process.env.PORT || 3000;
-
-// Раздаем index.html при заходе на сайт
 app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'index.html'));
 });
 
 app.listen(PORT, () => {
-    console.log(`🚀 Servidor iniciado en puerto ${PORT}`);
-    console.log(`🤖 Bot: ${bot.options.username}`);
-    console.log(`🌐 Webhook: ${WEBHOOK_URL || 'No configurado'}`);
-    console.log(`📞 API Health: http://localhost:${PORT}/api/health`);
-    console.log(`👑 Admin: ${ADMIN_TELEGRAM_ID}`);
-    console.log(`📂 Сайт доступен по адресу /`);
-
-    if (!WEBHOOK_URL) {
-        console.warn('⚠️  WEBHOOK_URL no configurado. Usando polling como respaldo.');
-        bot.startPolling();
-    }
-});
-
-cron.schedule('*/10 * * * *', checkInvestmentProgress);
-
-cron.schedule('0 0 * * *', () => {
-    const oneDayAgo = Date.now() - CACHE_DURATION;
-    let cleared = 0;
-
-    for (const [key, timestamp] of sentNotificationsCache.entries()) {
-        if (timestamp < oneDayAgo) {
-            sentNotificationsCache.delete(key);
-            cleared++;
-        }
-    }
-    console.log(`🧹 Limpiadas ${cleared} entradas de caché`);
-});
-
-bot.on('webhook_error', (error) => console.error('❌ Error de webhook:', error.message));
-bot.on('polling_error', (error) => console.error('❌ Error de polling:', error.message));
-
-process.on('SIGINT', () => {
-    console.log('👋 Apagando...');
-    bot.stopPolling();
-    process.exit(0);
+    console.log(`🚀 Servidor iniciado puerto ${PORT}`);
+    console.log(`🌐 Webhook: ${WEBHOOK_URL}`);
+    if (!WEBHOOK_URL) bot.startPolling();
 });
