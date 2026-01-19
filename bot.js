@@ -2,6 +2,8 @@ const TelegramBot = require('node-telegram-bot-api');
 const axios = require('axios');
 const cron = require('node-cron');
 const express = require('express');
+const path = require('path'); // Добавлено для путей к файлам
+const cors = require('cors'); // Добавлено для CORS
 require('dotenv').config();
 
 // Конфигурация
@@ -11,7 +13,7 @@ const BOT_HEALTH_API_URL = process.env.BOT_HEALTH_API_URL || 'https://site-2.0.r
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const JSONBIN_BIN_ID = process.env.JSONBIN_BIN_ID;
 const JSONBIN_MASTER_KEY = process.env.JSONBIN_MASTER_KEY;
-const ADMIN_TELEGRAM_ID = process.env.ADMIN_TELEGRAM_ID || '8382571809';
+const ADMIN_TELEGRAM_ID = process.env.ADMIN_TELEGRAM_ID;
 const WEBHOOK_URL = process.env.WEBHOOK_URL;
 const JSONBIN_URL = `https://api.jsonbin.io/v3/b/${JSONBIN_BIN_ID}/latest`;
 
@@ -21,10 +23,11 @@ const MAX_PROFIT_PERCENTAGE = 3258;
 
 // Инициализация Express
 const app = express();
+app.use(cors()); // Разрешаем CORS
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use((req, res, next) => {
-    res.header('Access-Control-Allow-Origin', '*'); // Открыто для всех для удобства тестов, в проде ограничьте
+    res.header('Access-Control-Allow-Origin', '*');
     res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
@@ -36,7 +39,9 @@ app.use((req, res, next) => {
 
 // Инициализация бота в режиме вебхуков
 const bot = new TelegramBot(BOT_TOKEN);
-bot.setWebHook(`${WEBHOOK_URL}/${BOT_TOKEN}`);
+if (WEBHOOK_URL) {
+    bot.setWebHook(`${WEBHOOK_URL}/bot-webhook/${BOT_TOKEN}`);
+}
 
 // Кэш уведомлений
 const sentNotificationsCache = new Map();
@@ -210,8 +215,7 @@ app.post('/api/admin/broadcast', checkSuperAdmin, async (req, res) => {
                 try {
                     await bot.sendMessage(user.telegramId, message, { parse_mode: 'Markdown' });
                     successCount++;
-                    // Небольшая задержка, чтобы не забанить за спам
-                    await new Promise(resolve => setTimeout(resolve, 50));
+                    await new Promise(resolve => setTimeout(resolve, 50)); // Anti-spam delay
                 } catch (e) {
                     console.error(`Error sending to ${user.telegramId}:`, e.message);
                     failCount++;
@@ -437,15 +441,22 @@ function calculateCurrentProfit(investment) {
     return Math.min(profit, MAX_PROFIT_PERCENTAGE);
 }
 
-// ==================== ЗАПУСК СЕРВЕРА ====================
+// ==================== ЗАПУСК СЕРВЕРА И РАЗДАЧА САЙТА ====================
 
 const PORT = process.env.PORT || 3000;
+
+// Раздаем index.html при заходе на сайт
+app.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, 'index.html'));
+});
+
 app.listen(PORT, () => {
     console.log(`🚀 Servidor iniciado en puerto ${PORT}`);
     console.log(`🤖 Bot: ${bot.options.username}`);
     console.log(`🌐 Webhook: ${WEBHOOK_URL || 'No configurado'}`);
     console.log(`📞 API Health: http://localhost:${PORT}/api/health`);
     console.log(`👑 Admin: ${ADMIN_TELEGRAM_ID}`);
+    console.log(`📂 Сайт доступен по адресу /`);
 
     if (!WEBHOOK_URL) {
         console.warn('⚠️  WEBHOOK_URL no configurado. Usando polling como respaldo.');
